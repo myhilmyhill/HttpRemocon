@@ -28,5 +28,7 @@
     <None Include="Exports.def">
       <Filter>ソース ファイル</Filter>
     </None>
+    <None Include="vcpkg.json" />
+    <None Include="vcpkg-configuration.json" />
   </ItemGroup>
 </Project>
