@@ -2,11 +2,15 @@
 
 #include <windows.h>
 #include <thread>
+#include <string>
+#include <codecvt>
+#include <shlobj_core.h>
 #include "httplib.h"
 
 #define TVTEST_PLUGIN_CLASS_IMPLEMENT
 #include "TVTestPlugin.h"
 
+void SimulateDropFiles(HWND hwndTarget, const std::wstring& filePath);
 
 // プラグインクラス
 class CHttpRemocon : public TVTest::CTVTestPlugin
@@ -62,10 +66,36 @@ bool CHttpRemocon::Finalize()
 void CHttpRemocon::StartHttpServer()
 {
     // サーバが実行されていない場合にスレッドを開始
+    if (m_serverThread.joinable()) {
+        return;  // サーバがすでに起動中の場合は何もしない
+    }
+
     m_serverThread = std::thread([this]() {
-        m_server.Get("/", [](const httplib::Request& req, httplib::Response& res) {
-            res.set_content("Hello from TVTest plugin!", "text/plain");
+        m_server.Get("/", [this](const httplib::Request& req, httplib::Response& res) {
+            res.status = 200;
             });
+
+        m_server.Post("/play", [this](const httplib::Request& req, httplib::Response& res) {
+            std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
+            std::wstring filePath = converter.from_bytes(req.body);
+
+            // /tvtpipe はすでにあるものとみなす
+            m_pApp->SetDriverName(L"BonDriver_Pipe.dll");
+            m_pApp->SetChannel(0, 0);
+
+            // ドラッグアンドドロップとしてファイルを開く
+            HWND hwndTarget = FindWindow(L"TVTest Window", NULL);
+            if (hwndTarget) {
+                SimulateDropFiles(hwndTarget, filePath);
+            }
+
+            res.status = 200;
+            });
+
+        m_server.set_error_handler([](const httplib::Request& req, httplib::Response& res) {
+            res.status = 404;
+            });
+
         m_server.listen("0.0.0.0", 8080);
         });
 }
@@ -113,4 +143,44 @@ CHttpRemocon* CHttpRemocon::GetThis(HWND hwnd)
 TVTest::CTVTestPlugin* CreatePluginClass()
 {
     return new CHttpRemocon;
+}
+
+// ファイルのドラッグアンドドロップをシミュレートする関数
+void SimulateDropFiles(HWND hwndTarget, const std::wstring& filePath)
+{
+    // ドロップするファイルのリストを準備
+    DROPFILES dropFiles = { 0 };
+    dropFiles.pFiles = sizeof(DROPFILES);  // ファイルリストのオフセット
+    dropFiles.fNC = TRUE;                  // 非クライアントエリアのフラグ
+    dropFiles.pt.x = 0;                    // ドロップ位置（相対座標）
+    dropFiles.pt.y = 0;
+    dropFiles.fWide = TRUE;
+
+    // ファイルパスを二重終端で準備（必要な形式）
+    size_t filePathSize = (filePath.length() + 1) * sizeof(wchar_t);
+    size_t totalSize = sizeof(DROPFILES) + filePathSize;
+
+    // メモリを確保
+    HGLOBAL hGlobal = GlobalAlloc(GHND, totalSize);
+    if (hGlobal) {
+        // メモリをロックしてアクセス可能にする
+        BYTE* pData = (BYTE*)GlobalLock(hGlobal);
+        if (pData) {
+            // DROPFILES構造体をコピー
+            memcpy(pData, &dropFiles, sizeof(DROPFILES));
+
+            // ファイルパスをコピー（DROPFILES構造体の直後に）
+            memcpy(pData + sizeof(DROPFILES), filePath.c_str(), filePathSize);
+
+            // メモリをアンロック
+            GlobalUnlock(hGlobal);
+
+            // ターゲットウィンドウにWM_DROPFILESメッセージを送信
+            PostMessage(hwndTarget, WM_DROPFILES, (WPARAM)hGlobal, 0);
+        }
+        else {
+            // メモリのロックに失敗した場合
+            GlobalFree(hGlobal);
+        }
+    }
 }
