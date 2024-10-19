@@ -1,6 +1,7 @@
 ﻿#define WIN32_LEAN_AND_MEAN
 
 #include <windows.h>
+#include <powrprof.h>
 #include <thread>
 #include <string>
 #include <codecvt>
@@ -11,11 +12,20 @@
 #include "TVTestPlugin.h"
 
 static const char* defaultHost = "0.0.0.0";
+static const char* allowOrigin = "*";
 static const int defaultPort = 8080;
 static const char delimiter = ',';
+static const UINT WM_TVTP_APP = 0x8000;
+static const UINT WM_TVTP_GET_POSITION = WM_TVTP_APP + 52;
+static const UINT WM_TVTP_IS_PAUSED = WM_TVTP_APP + 56;
+static const UINT WM_TVTP_GET_STRETCH = WM_TVTP_APP + 58;
+static const UINT WM_TVTP_SEEK = WM_TVTP_APP + 60;
+static const UINT WM_TVTP_SEEK_ABSOLUTE = WM_TVTP_APP + 61;
+
 static void PrintChannel(std::ostringstream& output, const WCHAR* szDriver, const TVTest::ChannelInfo& ch);
 static void SimulateDropFiles(HWND hwndTarget, const std::wstring& filePath);
 static std::string WideCharToUTF8(const WCHAR* pWideChar);
+static int ParseTimeToMilliseconds(const std::string& input);
 
 // プラグインクラス
 class CHttpRemocon : public TVTest::CTVTestPlugin
@@ -88,26 +98,10 @@ void CHttpRemocon::StartHttpServer()
                 res.status = 200;
             }
             else if (req.body == "sleep") {
-                // スリープ処理を別スレッドで実行
+                // レスポンスを返すためスリープ処理を別スレッドで実行
                 std::thread([this]() {
-                    // Windowsをスリープさせる
-                    HANDLE hToken;
-                    TOKEN_PRIVILEGES tp;
-
-                    // プロセスのトークンを取得
-                    OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken);
-
-                    // SE_SHUTDOWN_NAME権限を取得
-                    LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tp.Privileges[0].Luid);
-                    tp.PrivilegeCount = 1;
-                    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-
-                    // 権限を調整
-                    AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(TOKEN_PRIVILEGES), NULL, NULL);
-
-                    // スリープを実行
-                    SetSystemPowerState(TRUE, FALSE);
-                    }).detach();  // スレッドをデタッチして即座に戻る
+                    SetSuspendState(FALSE, FALSE, FALSE);
+                    }).detach();
 
                 res.status = 200;
             }
@@ -134,6 +128,98 @@ void CHttpRemocon::StartHttpServer()
             HWND hwndTarget = FindWindow(L"TVTest Window", NULL);
             if (hwndTarget) {
                 SimulateDropFiles(hwndTarget, filePath);
+            }
+
+            res.status = 200;
+            });
+
+        m_server.Get("/play/pause", [this](const httplib::Request& req, httplib::Response& res) {
+            HWND hwnd = FindWindow(TEXT("TvtPlay Frame"), NULL);
+            if (hwnd == NULL) {
+                res.status = 500;
+                res.set_content("Failed FindWindow: TvtPlay Frame", "text/plain");
+                return;
+            }
+
+            bool paused = SendMessage(hwnd, WM_TVTP_IS_PAUSED, 0, 0);
+            res.status = 200;
+            res.set_content(std::to_string(paused), "text/plain");
+            });
+
+        m_server.Post("/play/pause", [this](const httplib::Request& req, httplib::Response& res) {
+            // トグルしかできないので body は見ない
+            if (!m_pApp->DoCommand(L"tvtplay.tvtp:Pause")) {
+                res.status = 500;
+                res.set_content("Failed DoCommand: tvtplay.tvtp:Pause", "text/plain");
+                return;
+            }
+            res.status = 200;
+            });
+
+        m_server.Get("/play/pos", [this](const httplib::Request& req, httplib::Response& res) {
+            HWND hwnd = FindWindow(TEXT("TvtPlay Frame"), NULL);
+            if (hwnd == NULL) {
+                res.status = 500;
+                res.set_content("Failed FindWindow: TvtPlay Frame", "text/plain");
+                return;
+            }
+
+            int pos = SendMessage(hwnd, WM_TVTP_GET_POSITION, 0, 0);
+            res.status = 200;
+            res.set_content(std::to_string(pos), "text/plain");
+            });
+
+        m_server.Post("/play/pos", [this](const httplib::Request& req, httplib::Response& res) {
+            HWND hwnd = FindWindow(TEXT("TvtPlay Frame"), NULL);
+            if (hwnd == NULL) {
+                res.status = 500;
+                res.set_content("Failed FindWindow: TvtPlay Frame", "text/plain");
+                return;
+            }
+
+            const auto& command = req.body;
+            char sign = command[0] == '-' || command[0] == '+';
+            int msec = ParseTimeToMilliseconds(sign ? command.substr(1) : command);
+
+            if (sign || command.find(':') == std::string::npos) {
+                msec = command[0] == '-' ? -msec : msec;
+                SendMessage(hwnd, WM_TVTP_SEEK, 0, (LPARAM)msec);
+            }
+            else {
+                SendMessage(hwnd, WM_TVTP_SEEK_ABSOLUTE, 0, (LPARAM)msec);
+            }
+
+            // 現在時刻への反映に時間がかかるので返すのはやめる
+            res.status = 200;
+            });
+
+        m_server.Get("/play/speed", [this](const httplib::Request& req, httplib::Response& res) {
+            // TvtPlay を見てもあんまり柔軟なことはできなそう
+            HWND hwnd = FindWindow(TEXT("TvtPlay Frame"), NULL);
+            if (hwnd == NULL) {
+                res.status = 500;
+                res.set_content("Failed FindWindow: TvtPlay Frame", "text/plain");
+                return;
+            }
+
+            int stretch = HIWORD(SendMessage(hwnd, WM_TVTP_GET_STRETCH, 0, 0));
+            res.status = 200;
+            res.set_content(std::to_string(stretch), "text/plain");
+            });
+
+        m_server.Post("/play/speed", [this](const httplib::Request& req, httplib::Response& res) {
+            // TvtPlay を見てもあんまり柔軟なことはできなそう
+            std::wstring command = L"tvtplay.tvtp:Stretch";
+            if (req.body.length() == 1 && 'A' <= req.body[0] && req.body[0] <= 'Z') {
+                command += req.body[0];
+            }
+
+            if (!m_pApp->DoCommand(command.c_str())) {
+                res.status = 500;
+                std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
+                std::string error_message = "Failed DoCommand: " + converter.to_bytes(command);
+                res.set_content(error_message, "text/plain");
+                return;
             }
 
             res.status = 200;
@@ -181,6 +267,27 @@ void CHttpRemocon::StartHttpServer()
             SetChannel(req.body, res);
             });
 
+        m_server.Post("/view/panel", [this](const httplib::Request& req, httplib::Response& res) {
+            // トグルしかできないので body は見ない
+            if (!m_pApp->DoCommand(L"Panel")) {
+                res.status = 500;
+                res.set_content("Failed DoCommand: Panel", "text/plain");
+                return;
+            }
+
+            res.status = 200;
+            });
+
+        m_server.Post("/view/reset", [this](const httplib::Request& req, httplib::Response& res) {
+            if (!m_pApp->DoCommand(L"Reset")) {
+                res.status = 500;
+                res.set_content("Failed DoCommand: Reset", "text/plain");
+                return;
+            }
+
+            res.status = 200;
+            });
+
         m_server.set_exception_handler([](const auto& req, auto& res, std::exception_ptr ep) {
             auto fmt = "%s";
             char buf[BUFSIZ];
@@ -197,6 +304,9 @@ void CHttpRemocon::StartHttpServer()
             res.status = 500;
             });
 
+        m_server.set_default_headers({
+            { "Access-Control-Allow-Origin", allowOrigin },
+            });
         m_server.listen(defaultHost, defaultPort);
         });
 }
@@ -408,4 +518,29 @@ std::string WideCharToUTF8(const WCHAR* pWideChar)
     std::string utf8Str(len - 1, '\0'); // 終端文字分を引く
     WideCharToMultiByte(CP_UTF8, 0, pWideChar, -1, &utf8Str[0], len, nullptr, nullptr);
     return utf8Str;
+}
+
+int ParseTimeToMilliseconds(const std::string& input) {
+    int hours = 0, minutes = 0, seconds = 0;
+    char _;
+
+    std::istringstream iss(input);
+    auto count = std::count(input.begin(), input.end(), ':');
+    if (count == 0) {
+        // 秒のみの場合 (例: "1")
+        iss >> seconds;
+    }
+    else if (count == 1) {
+        // 分:秒 の場合 (例: "0:10")
+        iss >> minutes >> _ >> seconds;
+    }
+    else if (count == 2) {
+        // 時:分:秒 の場合 (例: "1:00:00")
+        iss >> hours >> _ >> minutes >> _ >> seconds;
+    }
+    else {
+        throw std::invalid_argument("Invalid time format");
+    }
+
+    return (hours * 3600 + minutes * 60 + seconds) * 1000;
 }
