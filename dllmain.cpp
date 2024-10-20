@@ -1,13 +1,13 @@
 ﻿#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 
 #include <windows.h>
-#include <powrprof.h>
 #include <thread>
 #include <string>
-#include <codecvt>
 #include <shlobj_core.h>
 #include <filesystem>
 #include <chrono>
+#include <limits>
 #include "httplib.h"
 
 #define TVTEST_PLUGIN_CLASS_IMPLEMENT
@@ -30,8 +30,8 @@ std::string convertWstringToUtf8(const std::wstring& wstr);
 static void SimulateDropFiles(HWND hwndTarget, const std::wstring& filePath);
 static std::string WideCharToUTF8(const WCHAR* pWideChar);
 static int ParseTimeToMilliseconds(const std::string& input);
-std::string findRecentBMPFile(const std::wstring& directory, const std::chrono::system_clock::time_point& lastSaveTime);
-std::vector<char> readFile(const std::string & filePath);
+std::filesystem::path findRecentBMPFile(const std::wstring& directory, const std::chrono::system_clock::time_point& lastSaveTime);
+std::vector<char> readFile(const std::filesystem::path& filePath);
 
 // プラグインクラス
 class CHttpRemocon : public TVTest::CTVTestPlugin
@@ -106,7 +106,10 @@ void CHttpRemocon::StartHttpServer()
             else if (req.body == "sleep") {
                 // レスポンスを返すためスリープ処理を別スレッドで実行
                 std::thread([this]() {
-                    SetSuspendState(FALSE, FALSE, FALSE);
+                    m_pApp->SetDriverName(nullptr);
+
+                    // 画面オフにならずモダンスタンバイになるらしい
+                    SendNotifyMessage(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2);
                     }).detach();
 
                 res.status = 200;
@@ -376,14 +379,14 @@ void CHttpRemocon::StartHttpServer()
                 res.set_content("Failed GetSetting; CaptureFolder", "text/plain");
             }
 
-            std::string bmpFilePath = findRecentBMPFile(std::wstring(szFolder), saveStartTime);
+            auto bmpFilePath = findRecentBMPFile(std::wstring(szFolder), saveStartTime);
             if (bmpFilePath.empty()) {
                 res.status = 500;
                 res.set_content("Invalid bmp file path", "text/plain");
                 return;
             }
 
-            std::vector<char> bmpData = readFile(bmpFilePath);
+            auto bmpData = readFile(bmpFilePath);
             if (bmpData.empty()) {
                 res.status = 500;
                 res.set_content("Failed to read bmp file", "text/plain");
@@ -471,7 +474,9 @@ std::string CHttpRemocon::GetTunerList()
                     const TVTest::DriverTuningSpaceInfo& chs = *spaces.SpaceList[j];
                     for (DWORD k = 0; k < chs.NumChannels; k++) {
                         const TVTest::ChannelInfo& ch = *chs.ChannelList[k];
-                        PrintChannel(tunerList, szDriver, ch);
+                        if (!(ch.Flags & TVTest::CHANNEL_FLAG_DISABLED)) {
+                            PrintChannel(tunerList, szDriver, ch);
+                        }
                     }
                 }
 
@@ -507,7 +512,7 @@ void CHttpRemocon::SetChannel(const std::string& body, httplib::Response& res) {
             try {
                 info.Channel = std::stoi(channelStr);
             }
-            catch (const std::invalid_argument& e) {
+            catch (const std::invalid_argument&) {
                 res.status = 400;
                 res.set_content("Invalid Channel value", "text/plain");
                 return;
@@ -518,7 +523,7 @@ void CHttpRemocon::SetChannel(const std::string& body, httplib::Response& res) {
             try {
                 info.Space = std::stoi(space);
             }
-            catch (const std::invalid_argument& e) {
+            catch (const std::invalid_argument&) {
                 res.status = 400;
                 res.set_content("Invalid Space value", "text/plain");
                 return;
@@ -529,7 +534,7 @@ void CHttpRemocon::SetChannel(const std::string& body, httplib::Response& res) {
             try {
                 info.ServiceID = std::stoi(serviceIdStr);
             }
-            catch (const std::invalid_argument& e) {
+            catch (const std::invalid_argument&) {
                 res.status = 400;
                 res.set_content("Invalid ServiceID value", "text/plain");
                 return;
@@ -699,7 +704,7 @@ int ParseTimeToMilliseconds(const std::string& input) {
 }
 
 // 指定された時間範囲内のBMPファイルを探す関数
-std::string findRecentBMPFile(const std::wstring& directory, const std::chrono::system_clock::time_point& lastSaveTime) {
+std::filesystem::path findRecentBMPFile(const std::wstring& directory, const std::chrono::system_clock::time_point& lastSaveTime) {
     auto lastSaveFileTime = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
         std::filesystem::file_time_type::clock::now() - (std::chrono::system_clock::now() - lastSaveTime));
 
@@ -707,25 +712,25 @@ std::string findRecentBMPFile(const std::wstring& directory, const std::chrono::
         if (entry.is_regular_file() && entry.path().extension() == ".bmp") {
             auto lastWriteTime = std::filesystem::last_write_time(entry);
 
-            if (lastWriteTime > lastSaveFileTime) {
-                return entry.path().string();
+            if (lastWriteTime >= lastSaveFileTime) {
+                return entry.path();
             }
         }
     }
-    return ""; // 該当するファイルが見つからなければ空文字列を返す
+    return std::filesystem::path{};
 }
 
+// https://coniferproductions.com/posts/2022/10/25/reading-binary-files-cpp/
+std::vector<char> readFile(const std::filesystem::path& filePath) {
+    auto lengthUintmax = std::filesystem::file_size(filePath);
+    if (lengthUintmax == 0) return std::vector<char>{};
+    if (lengthUintmax > std::numeric_limits<size_t>::max()) throw std::overflow_error("Too large file");
 
-std::vector<char> readFile(const std::string& filePath) {
-    std::ifstream file(filePath, std::ios::binary);
-    std::vector<char> buffer;
-    if (file) {
-        file.seekg(0, std::ios::end);
-        size_t fileSize = file.tellg();
-        file.seekg(0, std::ios::beg);
+    size_t length = static_cast<size_t>(lengthUintmax);
+    std::vector<char> buffer(length);
+    std::ifstream inputFile(filePath, std::ios::binary);
+    if (!inputFile) throw std::runtime_error("Failed to open file");
+    if (!inputFile.read(buffer.data(), length)) throw std::runtime_error("Failed to read file");
 
-        buffer.resize(fileSize);
-        file.read(buffer.data(), fileSize);
-    }
     return buffer;
 }
