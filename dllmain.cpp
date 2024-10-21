@@ -172,9 +172,18 @@ void CHttpRemocon::StartHttpServer()
                 return;
             }
 
-            int pos = SendMessage(hwnd, WM_TVTP_GET_POSITION, 0, 0);
+            int msec = SendMessage(hwnd, WM_TVTP_GET_POSITION, 0, 0);
+            int total_sec = msec / 1000;
+            int s = total_sec % 60;
+            int m = (total_sec / 60) % 60;
+            int h = total_sec / 3600;
+
+            std::ostringstream oss;
+            if (h > 0) oss << h << ":";
+            oss << std::setw(2) << std::setfill('0') << m << ":"
+                << std::setw(2) << std::setfill('0') << s;
+            res.set_content(oss.str(), "text/plain");
             res.status = 200;
-            res.set_content(std::to_string(pos), "text/plain");
             });
 
         m_server.Post("/play/pos", [this](const httplib::Request& req, httplib::Response& res) {
@@ -434,6 +443,10 @@ void CHttpRemocon::StartHttpServer()
             res.status = 500;
             });
 
+        m_server.Get("/cli", [](const auto& req, auto& res) {
+            res.set_file_content("Plugins/HttpRemoconCli.html");
+            });
+        m_server.set_file_extension_and_mimetype_mapping("html", "text/html");
         m_server.set_default_headers({
             { "Access-Control-Allow-Origin", allowOrigin },
             });
