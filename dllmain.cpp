@@ -3,6 +3,7 @@
 
 #include <windows.h>
 #include <thread>
+#include <future>
 #include <string>
 #include <shlobj_core.h>
 #include <filesystem>
@@ -29,6 +30,7 @@ std::wstring convertUtf8ToWstring(const std::string& utf8);
 std::string convertWstringToUtf8(const std::wstring& wstr);
 static void SimulateDropFiles(HWND hwndTarget, const std::wstring& filePath);
 static std::string WideCharToUTF8(const WCHAR* pWideChar);
+std::wstring ConvertToWString(const char* str);
 static int ParseTimeToMilliseconds(const std::string& input);
 std::filesystem::path findRecentBMPFile(const std::wstring& directory, const std::chrono::system_clock::time_point& lastSaveTime);
 std::vector<char> readFile(const std::filesystem::path& filePath);
@@ -100,7 +102,7 @@ void CHttpRemocon::StartHttpServer()
 
         m_server.Post("/", [this](const httplib::Request& req, httplib::Response& res) {
             if (req.body == "close") {
-                m_pApp->Close();
+                m_pApp->SetDriverName(nullptr);
                 res.status = 200;
             }
             else if (req.body == "sleep") {
@@ -369,39 +371,46 @@ void CHttpRemocon::StartHttpServer()
             });
 
         m_server.Post("/view/cap", [this](const httplib::Request& req, httplib::Response& res) {
-            // たぶん保存したキャプチャのファイル名がわからない。
-            // ファイルのタイムスタンプで頑張って探す。
-            // CaptureImageをした後にSaveImageは時間差ができるのでダメだった
-            auto saveStartTime = std::chrono::system_clock::now();
+            std::future<std::vector<char>> futureResult = std::async(std::launch::async,
+                [this, &res]() {
+                    // たぶん保存したキャプチャのファイル名がわからない。
+                    // ファイルのタイムスタンプで頑張って探す。
+                    // CaptureImageをした後にSaveImageは時間差ができるのでダメだった
+                    auto saveStartTime = std::chrono::system_clock::now();
 
-            auto saved = m_pApp->SaveImage();
-            if (!saved) {
-                res.status = 500;
-                res.set_content("Failed SaveImage", "text/plain");
-                return;
-            }
+                    auto saved = m_pApp->SaveImage();
+                    if (!saved) {
+                        res.status = 500;
+                        res.set_content("Failed SaveImage", "text/plain");
+                        return std::vector<char>{};
+                    }
 
-            // 相対パスの場合、あきらめる
-            WCHAR szFolder[MAX_PATH] = {};
-            if (m_pApp->GetSetting(L"CaptureFolder", szFolder, MAX_PATH) < 1) {
-                res.status = 500;
-                res.set_content("Failed GetSetting; CaptureFolder", "text/plain");
-            }
+                    // 相対パスの場合、あきらめる
+                    WCHAR szFolder[MAX_PATH] = {};
+                    if (m_pApp->GetSetting(L"CaptureFolder", szFolder, MAX_PATH) < 1) {
+                        res.status = 500;
+                        res.set_content("Failed GetSetting; CaptureFolder", "text/plain");
+                        return std::vector<char>{};
+                    }
 
-            auto bmpFilePath = findRecentBMPFile(std::wstring(szFolder), saveStartTime);
-            if (bmpFilePath.empty()) {
-                res.status = 500;
-                res.set_content("Invalid bmp file path", "text/plain");
-                return;
-            }
+                    auto bmpFilePath = findRecentBMPFile(std::wstring(szFolder), saveStartTime);
+                    if (bmpFilePath.empty()) {
+                        res.status = 500;
+                        res.set_content("Invalid bmp file path", "text/plain");
+                        return std::vector<char>{};
+                    }
 
-            auto bmpData = readFile(bmpFilePath);
-            if (bmpData.empty()) {
-                res.status = 500;
-                res.set_content("Failed to read bmp file", "text/plain");
-                return;
-            }
+                    auto bmpData = readFile(bmpFilePath);
+                    if (bmpData.empty()) {
+                        res.status = 500;
+                        res.set_content("Failed to read bmp file", "text/plain");
+                        return std::vector<char>{};
+                    }
 
+                    return bmpData;
+                });
+            auto bmpData = futureResult.get();
+            if (bmpData.empty()) return;
             res.set_content(bmpData.data(), bmpData.size(), "image/bmp");
             res.status = 200;
             });
@@ -418,7 +427,8 @@ void CHttpRemocon::StartHttpServer()
             });
 
         m_server.Post("/view/reset", [this](const httplib::Request& req, httplib::Response& res) {
-            if (!m_pApp->Reset(TVTest::RESET_VIEWER)) {
+            TVTest::ResetFlag flag = std::stoi(req.body);
+            if (!m_pApp->Reset(flag)) {
                 res.status = 500;
                 res.set_content("Failed Reset", "text/plain");
                 return;
@@ -428,18 +438,17 @@ void CHttpRemocon::StartHttpServer()
             });
 
         m_server.set_exception_handler([](const auto& req, auto& res, std::exception_ptr ep) {
-            auto fmt = "%s";
-            char buf[BUFSIZ];
             try {
                 std::rethrow_exception(ep);
             }
             catch (std::exception& e) {
-                snprintf(buf, sizeof(buf), fmt, e.what());
+                const char* a = e.what();
+                auto w = ConvertToWString(a);
+                res.set_content(convertWstringToUtf8(w), "text/plain");
             }
             catch (...) {
-                snprintf(buf, sizeof(buf), fmt, "Unknown Exception");
+                res.set_content("Unknown Exception", "text/plain");
             }
-            res.set_content(buf, "text/plain");
             res.status = 500;
             });
 
@@ -679,6 +688,20 @@ void SimulateDropFiles(HWND hwndTarget, const std::wstring& filePath)
     }
 }
 
+std::wstring ConvertToWString(const char* str) {
+    // 文字列の長さを取得します。
+    int len = MultiByteToWideChar(CP_ACP, 0, str, -1, nullptr, 0);
+    if (len == 0) {
+        // エラー処理（必要に応じて追加）
+        return L"";
+    }
+
+    // wchar_tバッファを確保します。
+    std::wstring wstr(len - 1, L'\0'); // 終端文字分を引く
+    MultiByteToWideChar(CP_ACP, 0, str, -1, &wstr[0], len);
+
+    return wstr;
+}
 
 std::string WideCharToUTF8(const WCHAR* pWideChar)
 {
@@ -716,22 +739,65 @@ int ParseTimeToMilliseconds(const std::string& input) {
     return (hours * 3600 + minutes * 60 + seconds) * 1000;
 }
 
+#ifdef _DEBUG
+static void debugPrintFileTime(const wchar_t* label, const FILETIME& fileTime) {
+    SYSTEMTIME systemTime;
+    FileTimeToSystemTime(&fileTime, &systemTime);
+
+    std::wstringstream ss;
+    ss << label << L": "
+        << systemTime.wYear << L"-"
+        << std::setfill(L'0') << std::setw(2) << systemTime.wMonth << L"-"
+        << std::setw(2) << systemTime.wDay << L" "
+        << std::setw(2) << systemTime.wHour << L":"
+        << std::setw(2) << systemTime.wMinute << L":"
+        << std::setw(2) << systemTime.wSecond << L"."
+        << std::setw(3) << systemTime.wMilliseconds << L"\n";
+
+    OutputDebugStringW(ss.str().c_str());
+}
+#endif
+
 // 指定された時間範囲内のBMPファイルを探す関数
 std::filesystem::path findRecentBMPFile(const std::wstring& directory, const std::chrono::system_clock::time_point& lastSaveTime) {
-    auto lastSaveFileTime = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-        std::filesystem::file_time_type::clock::now() - (std::chrono::system_clock::now() - lastSaveTime));
+    // lastSaveTime を FILETIME に変換
+    FILETIME lastSaveFileTime;
+    ULARGE_INTEGER ull;
+    ull.QuadPart = std::chrono::duration_cast<std::chrono::nanoseconds>(lastSaveTime.time_since_epoch()).count() / 100; // 100ナノ秒に変換
+    ull.QuadPart += 116444736000000000ULL; // UnixエポックからWindowsエポックのオフセットを加算
+    lastSaveFileTime.dwLowDateTime = static_cast<DWORD>(ull.LowPart);
+    lastSaveFileTime.dwHighDateTime = static_cast<DWORD>(ull.HighPart);
 
-    for (const auto& entry : std::filesystem::directory_iterator(directory)) {
-        if (entry.is_regular_file() && entry.path().extension() == ".bmp") {
-            auto lastWriteTime = std::filesystem::last_write_time(entry);
+#ifdef _DEBUG
+    debugPrintFileTime(L"lastSaveFileTime", lastSaveFileTime);
+#endif
 
-            if (lastWriteTime >= lastSaveFileTime) {
-                return entry.path();
+    // ディレクトリ内のファイルを検索
+    WIN32_FIND_DATAW findData;
+    HANDLE hFind = FindFirstFileW((directory + L"\\*.bmp").c_str(), &findData);
+
+    if (hFind == INVALID_HANDLE_VALUE) {
+        return {};
+    }
+
+    std::filesystem::path recentBMPFile;
+    do {
+        // 通常ファイルであることを確認
+        if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+#ifdef _DEBUG
+            debugPrintFileTime(findData.cFileName, findData.ftLastWriteTime);
+#endif
+            if (CompareFileTime(&findData.ftLastWriteTime, &lastSaveFileTime) >= 0) {
+                recentBMPFile = std::filesystem::path(directory) / findData.cFileName;
+                break;
             }
         }
-    }
-    return std::filesystem::path{};
+    } while (FindNextFileW(hFind, &findData) != 0);
+
+    FindClose(hFind);
+    return recentBMPFile;
 }
+
 
 // https://coniferproductions.com/posts/2022/10/25/reading-binary-files-cpp/
 std::vector<char> readFile(const std::filesystem::path& filePath) {
