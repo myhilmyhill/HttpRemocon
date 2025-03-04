@@ -5,10 +5,13 @@
 #include <thread>
 #include <future>
 #include <string>
+#include <cwctype>
 #include <shlobj_core.h>
 #include <filesystem>
 #include <chrono>
 #include <limits>
+#include "LibISDB/LibISDB/LibISDB.hpp"
+#include "LibISDB/LibISDB/TS/CaptionParser.hpp"
 #include "httplib.h"
 
 #define TVTEST_PLUGIN_CLASS_IMPLEMENT
@@ -25,6 +28,7 @@ static const UINT WM_TVTP_GET_STRETCH = WM_TVTP_APP + 58;
 static const UINT WM_TVTP_SEEK = WM_TVTP_APP + 60;
 static const UINT WM_TVTP_SEEK_ABSOLUTE = WM_TVTP_APP + 61;
 
+BOOL CALLBACK StreamCallback(BYTE* pData, void* pClientData);
 static void PrintChannel(std::ostringstream& output, const WCHAR* szDriver, const TVTest::ChannelInfo& ch);
 std::wstring convertUtf8ToWstring(const std::string& utf8);
 std::string convertWstringToUtf8(const std::wstring& wstr);
@@ -34,6 +38,13 @@ std::wstring ConvertToWString(const char* str);
 static int ParseTimeToMilliseconds(const std::string& input);
 std::filesystem::path findRecentBMPFile(const std::wstring& directory, const std::chrono::system_clock::time_point& lastSaveTime);
 std::vector<char> readFile(const std::filesystem::path& filePath);
+
+
+static std::wstring& trim(std::wstring& s) {
+    s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](wchar_t ch) { return !std::iswspace(ch); }));
+    s.erase(std::find_if(s.rbegin(), s.rend(), [](wchar_t ch) { return !std::iswspace(ch); }).base(), s.end());
+    return s;
+}
 
 // プラグインクラス
 class CHttpRemocon : public TVTest::CTVTestPlugin
@@ -49,10 +60,96 @@ class CHttpRemocon : public TVTest::CTVTestPlugin
     std::string GetTunerList();
     void SetChannel(const std::string& body, httplib::Response& res);
 
+    class : public LibISDB::CaptionParser::CaptionHandler {
+    private:
+        std::wstringstream wss;
+
+        bool fClearLast = false;
+        bool fContinue = false;
+        static const bool m_fIgnoreSmall = true;
+
+    public:
+        void OnLanguageUpdate(LibISDB::CaptionParser* pParser) {}
+        void OnCaption(LibISDB::CaptionParser* pParser, uint8_t Language, const LibISDB::CharType* pText,
+                       const LibISDB::ARIBStringDecoder::FormatList* pFormatList) {
+#ifdef _DEBUG
+            OutputDebugStringW(pText);
+#endif
+            const int Length = ::lstrlen(pText);
+
+            if (Length > 0) {
+
+                int i;
+                for (i = 0; i < Length; i++) {
+                    if (pText[i] != '\f')
+                        break;
+                }
+                if (i == Length) {
+                    if (fClearLast || fContinue)
+                        return;
+                    fClearLast = true;
+                }
+                else {
+                    fClearLast = false;
+                }
+
+                std::wstring Buff(pText);
+
+                if (m_fIgnoreSmall && !pParser->Is1Seg()) {
+                    for (int i = static_cast<int>(pFormatList->size()) - 1; i >= 0; i--) {
+                        if ((*pFormatList)[i].Size == LibISDB::ARIBStringDecoder::CharSize::Small) {
+                            const size_t Pos = (*pFormatList)[i].Pos;
+                            if (Pos < Buff.length()) {
+                                if (i + 1 < static_cast<int>(pFormatList->size())) {
+                                    const size_t NextPos = std::min(Buff.length(), (*pFormatList)[i + 1].Pos);
+                                    //TRACE(TEXT("Caption exclude : {}\n"), StringView(&Buff[Pos], NextPos - Pos));
+                                    Buff.erase(Pos, NextPos - Pos);
+                                }
+                                else {
+                                    Buff.erase(Pos);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                for (size_t i = 0; i < Buff.length(); i++) {
+                    if (Buff[i] == '\f') {
+                        if (i == 0 && !fContinue) {
+                            Buff.replace(0, 1, TEXT("\n"));
+                            i++;
+                        }
+                        else {
+                            Buff.erase(i, 1);
+                        }
+                    }
+                }
+                fContinue =
+                    Buff.length() > 1 && Buff.back() == L'→';
+                if (fContinue)
+                    Buff.pop_back();
+                if (!Buff.empty()) {
+                    wss << Buff;
+                }
+            }
+        }
+        std::wstring GetStockedCaptions() { return wss.str(); }
+        void ClearStockedCaptions() { wss.str(L""); wss.clear(); }
+    } captionHandler;
+
+    LibISDB::CaptionParser parser;
+
 public:
     bool GetPluginInfo(TVTest::PluginInfo* pInfo) override;
     bool Initialize() override;
     bool Finalize() override;
+
+    void StreamCallback_(BYTE* pData) {
+        LibISDB::TSPacket packet;
+        packet.AddData(pData, 188);
+        packet.ParsePacket();
+        parser.StorePacket(&packet);
+    }
 };
 
 
@@ -72,8 +169,18 @@ bool CHttpRemocon::Initialize()
 
     // イベントコールバック関数を登録
     m_pApp->SetEventCallback(EventCallback, this);
+    m_pApp->SetStreamCallback(0, StreamCallback, this);
+    parser.SetCaptionHandler(&captionHandler);
 
     return true;
+}
+
+
+BOOL CALLBACK StreamCallback(BYTE* pData, void* pClientData)
+{
+    CHttpRemocon* pThis = static_cast<CHttpRemocon*>(pClientData);
+    pThis->StreamCallback_(pData);
+    return TRUE;
 }
 
 
@@ -370,6 +477,17 @@ void CHttpRemocon::StartHttpServer()
             }
             });
 
+        m_server.Get("/captions", [this](const httplib::Request& req, httplib::Response& res) {
+            auto caption = convertWstringToUtf8(captionHandler.GetStockedCaptions());
+            res.set_content(caption, "text/plain; charset=utf-8");
+            res.status = 200;
+            });
+
+        m_server.Delete("/captions", [this](const httplib::Request& req, httplib::Response& res) {
+            captionHandler.ClearStockedCaptions();
+            res.status = 200;
+            });
+
         m_server.Post("/view/cap", [this](const httplib::Request& req, httplib::Response& res) {
             std::future<std::vector<char>> futureResult = std::async(std::launch::async,
                 [this, &res]() {
@@ -645,6 +763,7 @@ std::string convertWstringToUtf8(const std::wstring& wstr) {
 
     std::string utf8(utf8Size, '\0');
     WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &utf8[0], utf8Size, nullptr, nullptr);
+    utf8.resize(utf8Size - 1);  // 末尾のヌル文字（'\0'）を除去
     return utf8;
 }
 
