@@ -11,8 +11,16 @@
 #include <chrono>
 #include <limits>
 #include "LibISDB/LibISDB/LibISDB.hpp"
-#include "LibISDB/LibISDB/TS/CaptionParser.hpp"
+#include "LibISDB/LibISDB/Base/StandardStream.hpp"
+#include "LibISDB/LibISDB/Engine/FilterGraph.hpp"
+#include "LibISDB/LibISDB/Engine/TSEngine.hpp"
+#include "LibISDB/LibISDB/Filters/CaptionFilter.hpp"
+#include "LibISDB/LibISDB/Filters/FilterBase.hpp"
+#include "LibISDB/LibISDB/Filters/StreamSourceFilter.hpp"
+#include "LibISDB/LibISDB/Filters/TSPacketParserFilter.hpp"
 #include "httplib.h"
+#include "ByteStream.cpp"
+#include "Engine.cpp"
 
 #define TVTEST_PLUGIN_CLASS_IMPLEMENT
 #include "TVTestPlugin.h"
@@ -60,7 +68,7 @@ class CHttpRemocon : public TVTest::CTVTestPlugin
     std::string GetTunerList();
     void SetChannel(const std::string& body, httplib::Response& res);
 
-    class : public LibISDB::CaptionParser::CaptionHandler {
+    class : public LibISDB::CaptionFilter::Handler {
     private:
         std::wstringstream wss;
 
@@ -69,9 +77,11 @@ class CHttpRemocon : public TVTest::CTVTestPlugin
         static const bool m_fIgnoreSmall = true;
 
     public:
-        void OnLanguageUpdate(LibISDB::CaptionParser* pParser) {}
-        void OnCaption(LibISDB::CaptionParser* pParser, uint8_t Language, const LibISDB::CharType* pText,
-                       const LibISDB::ARIBStringDecoder::FormatList* pFormatList) {
+        void OnLanguageUpdate(LibISDB::CaptionFilter* pFilter, LibISDB::CaptionParser* pParser) {}
+        void OnCaption(
+            LibISDB::CaptionFilter* pFilter, LibISDB::CaptionParser* pParser,
+            uint8_t Language, const LibISDB::CharType* pText,
+            const LibISDB::ARIBStringDecoder::FormatList* pFormatList) {
 #ifdef _DEBUG
             OutputDebugStringW(pText);
 #endif
@@ -135,9 +145,10 @@ class CHttpRemocon : public TVTest::CTVTestPlugin
         }
         std::wstring GetStockedCaptions() { return wss.str(); }
         void ClearStockedCaptions() { wss.str(L""); wss.clear(); }
-    } captionHandler;
+    } CaptionHandler;
 
-    LibISDB::CaptionParser parser;
+    ByteStream* Stream = nullptr;
+    Engine Engine;
 
 public:
     bool GetPluginInfo(TVTest::PluginInfo* pInfo) override;
@@ -145,10 +156,7 @@ public:
     bool Finalize() override;
 
     void StreamCallback_(BYTE* pData) {
-        LibISDB::TSPacket packet;
-        packet.AddData(pData, 188);
-        packet.ParsePacket();
-        parser.StorePacket(&packet);
+        if (Stream) Stream->Write(pData, 188);
     }
 };
 
@@ -170,7 +178,24 @@ bool CHttpRemocon::Initialize()
     // イベントコールバック関数を登録
     m_pApp->SetEventCallback(EventCallback, this);
     m_pApp->SetStreamCallback(0, StreamCallback, this);
-    parser.SetCaptionHandler(&captionHandler);
+
+    // 渡した先で unique_ptr として登録されるので、 delete しない
+    auto SourceFilter = new LibISDB::StreamSourceFilter;
+    auto Parser = new LibISDB::TSPacketParserFilter;
+    auto AnalyzerFilter = new LibISDB::AnalyzerFilter;
+    auto CaptionFilter = new LibISDB::CaptionFilter;
+    Stream = new ByteStream;
+
+    Engine.BuildEngine({
+        SourceFilter,
+        Parser,
+        AnalyzerFilter,
+        CaptionFilter,
+    });
+    CaptionFilter->SetCaptionHandler(&CaptionHandler);
+
+    Engine.SetStartStreamingOnSourceOpen(true);
+    Engine.OpenSource(Stream);
 
     return true;
 }
@@ -189,6 +214,7 @@ bool CHttpRemocon::Finalize()
     // 終了処理
     if (m_fEnabled) {
         StopHttpServer();
+        Engine.CloseEngine();
     }
 
     return true;
@@ -478,13 +504,13 @@ void CHttpRemocon::StartHttpServer()
             });
 
         m_server.Get("/captions", [this](const httplib::Request& req, httplib::Response& res) {
-            auto caption = convertWstringToUtf8(captionHandler.GetStockedCaptions());
+            auto caption = convertWstringToUtf8(CaptionHandler.GetStockedCaptions());
             res.set_content(caption, "text/plain; charset=utf-8");
             res.status = 200;
             });
 
         m_server.Delete("/captions", [this](const httplib::Request& req, httplib::Response& res) {
-            captionHandler.ClearStockedCaptions();
+            CaptionHandler.ClearStockedCaptions();
             res.status = 200;
             });
 
