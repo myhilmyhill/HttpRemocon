@@ -181,6 +181,7 @@
     <ClInclude Include="TVTestPlugin.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Captions.cpp" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="ByteStream.cpp" />
     <ClCompile Include="Engine.cpp" />

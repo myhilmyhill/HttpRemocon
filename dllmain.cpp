@@ -10,17 +10,8 @@
 #include <filesystem>
 #include <chrono>
 #include <limits>
-#include "LibISDB/LibISDB/LibISDB.hpp"
-#include "LibISDB/LibISDB/Base/StandardStream.hpp"
-#include "LibISDB/LibISDB/Engine/FilterGraph.hpp"
-#include "LibISDB/LibISDB/Engine/TSEngine.hpp"
-#include "LibISDB/LibISDB/Filters/CaptionFilter.hpp"
-#include "LibISDB/LibISDB/Filters/FilterBase.hpp"
-#include "LibISDB/LibISDB/Filters/StreamSourceFilter.hpp"
-#include "LibISDB/LibISDB/Filters/TSPacketParserFilter.hpp"
 #include "httplib.h"
-#include "ByteStream.cpp"
-#include "Engine.cpp"
+#include "Captions.cpp"
 
 #define TVTEST_PLUGIN_CLASS_IMPLEMENT
 #include "TVTestPlugin.h"
@@ -36,7 +27,6 @@ static const UINT WM_TVTP_GET_STRETCH = WM_TVTP_APP + 58;
 static const UINT WM_TVTP_SEEK = WM_TVTP_APP + 60;
 static const UINT WM_TVTP_SEEK_ABSOLUTE = WM_TVTP_APP + 61;
 
-BOOL CALLBACK StreamCallback(BYTE* pData, void* pClientData);
 static void PrintChannel(std::ostringstream& output, const WCHAR* szDriver, const TVTest::ChannelInfo& ch);
 std::wstring convertUtf8ToWstring(const std::string& utf8);
 std::string convertWstringToUtf8(const std::wstring& wstr);
@@ -60,6 +50,7 @@ class CHttpRemocon : public TVTest::CTVTestPlugin
     bool m_fEnabled = false;
     httplib::Server m_server;
     std::thread m_serverThread;
+    std::unique_ptr<Captions> m_captions;
 
     static LRESULT CALLBACK EventCallback(UINT Event, LPARAM lParam1, LPARAM lParam2, void* pClientData);
     static CHttpRemocon* GetThis(HWND hwnd);
@@ -68,96 +59,10 @@ class CHttpRemocon : public TVTest::CTVTestPlugin
     std::string GetTunerList();
     void SetChannel(const std::string& body, httplib::Response& res);
 
-    class : public LibISDB::CaptionFilter::Handler {
-    private:
-        std::wstringstream wss;
-
-        bool fClearLast = false;
-        bool fContinue = false;
-        static const bool m_fIgnoreSmall = true;
-
-    public:
-        void OnLanguageUpdate(LibISDB::CaptionFilter* pFilter, LibISDB::CaptionParser* pParser) {}
-        void OnCaption(
-            LibISDB::CaptionFilter* pFilter, LibISDB::CaptionParser* pParser,
-            uint8_t Language, const LibISDB::CharType* pText,
-            const LibISDB::ARIBStringDecoder::FormatList* pFormatList) {
-#ifdef _DEBUG
-            OutputDebugStringW(pText);
-#endif
-            const int Length = ::lstrlen(pText);
-
-            if (Length > 0) {
-
-                int i;
-                for (i = 0; i < Length; i++) {
-                    if (pText[i] != '\f')
-                        break;
-                }
-                if (i == Length) {
-                    if (fClearLast || fContinue)
-                        return;
-                    fClearLast = true;
-                }
-                else {
-                    fClearLast = false;
-                }
-
-                std::wstring Buff(pText);
-
-                if (m_fIgnoreSmall && !pParser->Is1Seg()) {
-                    for (int i = static_cast<int>(pFormatList->size()) - 1; i >= 0; i--) {
-                        if ((*pFormatList)[i].Size == LibISDB::ARIBStringDecoder::CharSize::Small) {
-                            const size_t Pos = (*pFormatList)[i].Pos;
-                            if (Pos < Buff.length()) {
-                                if (i + 1 < static_cast<int>(pFormatList->size())) {
-                                    const size_t NextPos = std::min(Buff.length(), (*pFormatList)[i + 1].Pos);
-                                    //TRACE(TEXT("Caption exclude : {}\n"), StringView(&Buff[Pos], NextPos - Pos));
-                                    Buff.erase(Pos, NextPos - Pos);
-                                }
-                                else {
-                                    Buff.erase(Pos);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                for (size_t i = 0; i < Buff.length(); i++) {
-                    if (Buff[i] == '\f') {
-                        if (i == 0 && !fContinue) {
-                            Buff.replace(0, 1, TEXT("\n"));
-                            i++;
-                        }
-                        else {
-                            Buff.erase(i, 1);
-                        }
-                    }
-                }
-                fContinue =
-                    Buff.length() > 1 && Buff.back() == L'→';
-                if (fContinue)
-                    Buff.pop_back();
-                if (!Buff.empty()) {
-                    wss << Buff;
-                }
-            }
-        }
-        std::wstring GetStockedCaptions() { return wss.str(); }
-        void ClearStockedCaptions() { wss.str(L""); wss.clear(); }
-    } CaptionHandler;
-
-    ByteStream* Stream = nullptr;
-    Engine Engine;
-
 public:
     bool GetPluginInfo(TVTest::PluginInfo* pInfo) override;
     bool Initialize() override;
     bool Finalize() override;
-
-    void StreamCallback_(BYTE* pData) {
-        if (Stream) Stream->Write(pData, 188);
-    }
 };
 
 
@@ -177,35 +82,8 @@ bool CHttpRemocon::Initialize()
 
     // イベントコールバック関数を登録
     m_pApp->SetEventCallback(EventCallback, this);
-    m_pApp->SetStreamCallback(0, StreamCallback, this);
-
-    // 渡した先で unique_ptr として登録されるので、 delete しない
-    auto SourceFilter = new LibISDB::StreamSourceFilter;
-    auto Parser = new LibISDB::TSPacketParserFilter;
-    auto AnalyzerFilter = new LibISDB::AnalyzerFilter;
-    auto CaptionFilter = new LibISDB::CaptionFilter;
-    Stream = new ByteStream;
-
-    Engine.BuildEngine({
-        SourceFilter,
-        Parser,
-        AnalyzerFilter,
-        CaptionFilter,
-    });
-    CaptionFilter->SetCaptionHandler(&CaptionHandler);
-
-    Engine.SetStartStreamingOnSourceOpen(true);
-    Engine.OpenSource(Stream);
 
     return true;
-}
-
-
-BOOL CALLBACK StreamCallback(BYTE* pData, void* pClientData)
-{
-    CHttpRemocon* pThis = static_cast<CHttpRemocon*>(pClientData);
-    pThis->StreamCallback_(pData);
-    return TRUE;
 }
 
 
@@ -214,7 +92,8 @@ bool CHttpRemocon::Finalize()
     // 終了処理
     if (m_fEnabled) {
         StopHttpServer();
-        Engine.CloseEngine();
+        m_pApp->SetStreamCallback(TVTest::STREAM_CALLBACK_REMOVE, m_captions->StreamCallback, nullptr);
+        m_captions.reset();
     }
 
     return true;
@@ -504,13 +383,13 @@ void CHttpRemocon::StartHttpServer()
             });
 
         m_server.Get("/captions", [this](const httplib::Request& req, httplib::Response& res) {
-            auto caption = convertWstringToUtf8(CaptionHandler.GetStockedCaptions());
+            auto caption = convertWstringToUtf8(m_captions->GetStockedCaptions());
             res.set_content(caption, "text/plain; charset=utf-8");
             res.status = 200;
             });
 
         m_server.Delete("/captions", [this](const httplib::Request& req, httplib::Response& res) {
-            CaptionHandler.ClearStockedCaptions();
+            m_captions->ClearStockedCaptions();
             res.status = 200;
             });
 
@@ -746,9 +625,14 @@ LRESULT CALLBACK CHttpRemocon::EventCallback(UINT Event, LPARAM lParam1, LPARAM 
         pThis->m_fEnabled = lParam1 != 0;
         if (pThis->m_fEnabled) {
             pThis->StartHttpServer();
+
+            if (!pThis->m_captions) pThis->m_captions = std::make_unique<Captions>();
+            pThis->m_pApp->SetStreamCallback(0, pThis->m_captions->StreamCallback, pThis->m_captions.get());
         }
         else {
             pThis->StopHttpServer();
+            pThis->m_pApp->SetStreamCallback(TVTest::STREAM_CALLBACK_REMOVE, pThis->m_captions->StreamCallback, nullptr);
+            pThis->m_captions.reset();
         }
         return TRUE;
     }

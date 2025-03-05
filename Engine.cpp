@@ -1,3 +1,4 @@
+#pragma once
 
 #include "LibISDB/LibISDB/LibISDB.hpp"
 #include "LibISDB/LibISDB/Engine/TSEngine.hpp"

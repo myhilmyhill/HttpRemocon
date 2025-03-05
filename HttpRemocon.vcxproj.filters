@@ -32,6 +32,9 @@
     <ClCompile Include="ByteStream.cpp">
       <Filter>ソース ファイル\Captions</Filter>
     </ClCompile>
+    <ClCompile Include="Captions.cpp">
+      <Filter>ソース ファイル\Captions</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="Exports.def">
