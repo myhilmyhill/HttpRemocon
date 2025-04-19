@@ -22,12 +22,17 @@ static const int defaultPort = 8080;
 static const char delimiter = ',';
 static const UINT WM_TVTP_APP = 0x8000;
 static const UINT WM_TVTP_GET_POSITION = WM_TVTP_APP + 52;
+static const UINT WM_TVTP_GET_DURATION = WM_TVTP_APP + 53;
 static const UINT WM_TVTP_IS_PAUSED = WM_TVTP_APP + 56;
 static const UINT WM_TVTP_GET_STRETCH = WM_TVTP_APP + 58;
 static const UINT WM_TVTP_SEEK = WM_TVTP_APP + 60;
 static const UINT WM_TVTP_SEEK_ABSOLUTE = WM_TVTP_APP + 61;
 
 static void PrintChannel(std::ostringstream& output, const WCHAR* szDriver, const TVTest::ChannelInfo& ch);
+std::string MsecToTime(int msec);
+std::string SystemTimeToTimeString(const SYSTEMTIME& st);
+std::string GetTvtpPosition();
+std::string GetTvtpDuration();
 std::wstring convertUtf8ToWstring(const std::string& utf8);
 std::string convertWstringToUtf8(const std::wstring& wstr);
 static void SimulateDropFiles(HWND hwndTarget, const std::wstring& filePath);
@@ -36,6 +41,7 @@ std::wstring ConvertToWString(const char* str);
 static int ParseTimeToMilliseconds(const std::string& input);
 std::filesystem::path findRecentBMPFile(const std::wstring& directory, const std::chrono::system_clock::time_point& lastSaveTime);
 std::vector<char> readFile(const std::filesystem::path& filePath);
+std::wstring EscapeJsonString(const std::wstring& input);
 
 
 static std::wstring& trim(std::wstring& s) {
@@ -179,24 +185,13 @@ void CHttpRemocon::StartHttpServer()
             });
 
         m_server.Get("/play/pos", [this](const httplib::Request& req, httplib::Response& res) {
-            HWND hwnd = FindWindow(TEXT("TvtPlay Frame"), NULL);
-            if (hwnd == NULL) {
+            auto str = GetTvtpPosition();
+            if (str.empty()) {
                 res.status = 500;
                 res.set_content("Failed FindWindow: TvtPlay Frame", "text/plain");
                 return;
             }
-
-            int msec = SendMessage(hwnd, WM_TVTP_GET_POSITION, 0, 0);
-            int total_sec = msec / 1000;
-            int s = total_sec % 60;
-            int m = (total_sec / 60) % 60;
-            int h = total_sec / 3600;
-
-            std::ostringstream oss;
-            if (h > 0) oss << h << ":";
-            oss << std::setw(2) << std::setfill('0') << m << ":"
-                << std::setw(2) << std::setfill('0') << s;
-            res.set_content(oss.str(), "text/plain");
+            res.set_content(str, "text/plain");
             res.status = 200;
             });
 
@@ -460,6 +455,92 @@ void CHttpRemocon::StartHttpServer()
             res.status = 200;
             });
 
+        m_server.Get("/status", [this](const httplib::Request& req, httplib::Response& res) {
+            std::wstringstream wss;
+            wss << "{";
+
+            // 録画中
+            {
+                TVTest::RecordStatusInfo info = {};
+                if (m_pApp->GetRecordStatus(&info)) {
+                    wss << "\"record_status\":" << info.Status << ",";
+                    wss << "\"record_time\":" << info.RecordTime << ",";
+                }
+            }
+
+            // チャンネル
+            {
+                TVTest::ChannelInfo info = {};
+                if (m_pApp->GetCurrentChannelInfo(&info) && info.szChannelName && info.szChannelName[0] != '\0') {
+                    wss << "\"channel_name\":\"" << EscapeJsonString(info.szChannelName) << "\",";
+                }
+            }
+
+            // 今の番組
+            {
+                static constexpr int maxEventName = 1000;
+                WCHAR eventName[maxEventName] = {};
+                TVTest::ProgramInfo info = {};
+                info.MaxEventName = maxEventName;
+                info.pszEventName = eventName;
+                if (m_pApp->GetCurrentProgramInfo(&info) && info.pszEventName && info.pszEventName[0] != '\0') {
+                    wss << "\"current_event_name\":\"" << EscapeJsonString(info.pszEventName) << "\",";
+                    wss << "\"current_event_start_time\":\"" << convertUtf8ToWstring(SystemTimeToTimeString(info.StartTime)) << "\",";
+                }
+            }
+
+            // 次の番組
+            {
+                static constexpr int maxEventName = 1000;
+                WCHAR eventName[maxEventName] = {};
+                TVTest::ProgramInfo info = {};
+                info.MaxEventName = maxEventName;
+                info.pszEventName = eventName;
+                if (m_pApp->GetCurrentProgramInfo(&info, true) && info.pszEventName && info.pszEventName[0] != '\0') {
+                    wss << "\"next_event_name\":\"" << EscapeJsonString(info.pszEventName) << "\",";
+                    wss << "\"next_event_start_time\":\"" << convertUtf8ToWstring(SystemTimeToTimeString(info.StartTime)) << "\",";
+                }
+            }
+
+            // 信号
+            {
+                TVTest::StatusInfo status = {};
+                if (m_pApp->GetStatus(&status)) {
+                    wss << "\"signal_level\":" << status.SignalLevel << ",";
+                    wss << "\"drop\":" << status.DropPacketCount << ",";
+                    wss << "\"error\":" << status.ErrorPacketCount << ",";
+                    wss << "\"scramble\":" << status.ScramblePacketCount << ",";
+                    wss << "\"bit_rate\":" << status.BitRate << ",";
+                }
+            }
+
+            // TVTPlay
+            {
+                auto elapsed = GetTvtpPosition();
+                if (!elapsed.empty()) {
+                    wss << "\"elapsed_time\":\"" << convertUtf8ToWstring(elapsed) << "\",";
+                }
+                auto total = GetTvtpDuration();
+                if (!total.empty()) {
+                    wss << "\"total_time\":\"" << convertUtf8ToWstring(total) << "\",";
+                }
+            }
+
+            // TOT
+            {
+                auto tot = m_captions->GetTOTTime();
+                if (!tot.empty()) {
+                    wss << "\"tot\":\"" << convertUtf8ToWstring(tot) << "\",";
+                }
+            }
+
+            wss << "\"volume\":" << m_pApp->GetVolume();
+            wss << "}";
+
+            res.set_content(convertWstringToUtf8(wss.str()), "application/json");
+            res.status = 200;
+            });
+
         m_server.set_exception_handler([](const auto& req, auto& res, std::exception_ptr ep) {
             try {
                 std::rethrow_exception(ep);
@@ -484,6 +565,48 @@ void CHttpRemocon::StartHttpServer()
             });
         m_server.listen(defaultHost, defaultPort);
         });
+}
+
+std::string MsecToTime(int msec) {
+    int total_sec = msec / 1000;
+    int s = total_sec % 60;
+    int m = (total_sec / 60) % 60;
+    int h = total_sec / 3600;
+
+    std::ostringstream oss;
+    if (h > 0) oss << h << ":";
+    oss << std::setw(2) << std::setfill('0') << m << ":"
+        << std::setw(2) << std::setfill('0') << s;
+    return oss.str();
+}
+
+std::string SystemTimeToTimeString(const SYSTEMTIME& st) {
+    char timeBuffer[100];
+
+    // "HH:mm:ss" フォーマットで時間だけ取得
+    GetTimeFormatA(LOCALE_USER_DEFAULT, 0, &st, "HH:mm", timeBuffer, sizeof(timeBuffer));
+
+    return std::string(timeBuffer);
+}
+
+std::string GetTvtpPosition() {
+    HWND hwnd = FindWindow(TEXT("TvtPlay Frame"), NULL);
+    if (hwnd == NULL) {
+        return std::string();
+    }
+
+    int msec = SendMessage(hwnd, WM_TVTP_GET_POSITION, 0, 0);
+    return MsecToTime(msec);
+}
+
+std::string GetTvtpDuration() {
+    HWND hwnd = FindWindow(TEXT("TvtPlay Frame"), NULL);
+    if (hwnd == NULL) {
+        return std::string();
+    }
+
+    int msec = SendMessage(hwnd, WM_TVTP_GET_DURATION, 0, 0);
+    return MsecToTime(msec);
 }
 
 
@@ -661,6 +784,7 @@ std::wstring convertUtf8ToWstring(const std::string& utf8) {
 
     std::wstring wstr(wideCharSize, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, &wstr[0], wideCharSize);
+    wstr.resize(wideCharSize - 1);  // 末尾のヌル文字（'\0'）を除去
     return wstr;
 }
 
@@ -841,4 +965,34 @@ std::vector<char> readFile(const std::filesystem::path& filePath) {
     if (!inputFile.read(buffer.data(), length)) throw std::runtime_error("Failed to read file");
 
     return buffer;
+}
+
+std::wstring EscapeJsonString(const std::wstring& input)
+{
+    std::wstring output;
+    for (wchar_t ch : input)
+    {
+        switch (ch)
+        {
+        case L'"':  output += L"\\\""; break;
+        case L'\\': output += L"\\\\"; break;
+        case L'/':  output += L"\\/";  break;
+        case L'\b': output += L"\\b";  break;
+        case L'\f': output += L"\\f";  break;
+        case L'\n': output += L"\\n";  break;
+        case L'\r': output += L"\\r";  break;
+        case L'\t': output += L"\\t";  break;
+        default:
+            if (ch < 0x20) {
+                wchar_t buf[7];
+                swprintf(buf, 7, L"\\u%04x", ch);
+                output += buf;
+            }
+            else {
+                output += ch;
+            }
+            break;
+        }
+    }
+    return output;
 }

@@ -20,6 +20,7 @@ using namespace LibISDB;
 class Captions {
     ByteStream* Stream = nullptr;
     Engine Engine;
+    AnalyzerFilter* Analyzer = nullptr;
 
     class : public CaptionFilter::Handler {
     private:
@@ -104,7 +105,7 @@ public:
         // “n‚µ‚½æ‚Å unique_ptr ‚Æ‚µ‚Ä“o˜^‚³‚ê‚é‚Ì‚ÅA delete ‚µ‚È‚¢
         auto Source = new StreamSourceFilter;
         auto Parser = new TSPacketParserFilter;
-        auto Analyzer = new AnalyzerFilter;
+        auto Analyzer = this->Analyzer = new AnalyzerFilter;
         auto Caption = new CaptionFilter;
         Stream = new ByteStream;
 
@@ -126,4 +127,14 @@ public:
     }
     std::wstring GetStockedCaptions() { return CaptionHandler.GetStockedCaptions(); }
     void ClearStockedCaptions() { CaptionHandler.ClearStockedCaptions(); }
+    std::string GetTOTTime() {
+        LibISDB::DateTime time;
+        if (Analyzer->GetInterpolatedTOTTime(&time)) {
+            char buffer[20] = {};
+            const std::tm tm = time.ToTm();
+            std::strftime(buffer, sizeof(buffer), "%Y/%m/%d %H:%M:%S", &tm);
+            return std::string(buffer);
+        }
+        return std::string();
+    }
 };
