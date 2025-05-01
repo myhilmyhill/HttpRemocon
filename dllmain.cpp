@@ -21,6 +21,7 @@ static const char* allowOrigin = "*";
 static const int defaultPort = 8080;
 static const char delimiter = ',';
 static const UINT WM_TVTP_APP = 0x8000;
+static const UINT WM_TVTP_IS_OPEN = WM_TVTP_APP + 51;
 static const UINT WM_TVTP_GET_POSITION = WM_TVTP_APP + 52;
 static const UINT WM_TVTP_GET_DURATION = WM_TVTP_APP + 53;
 static const UINT WM_TVTP_IS_PAUSED = WM_TVTP_APP + 56;
@@ -31,8 +32,8 @@ static const UINT WM_TVTP_SEEK_ABSOLUTE = WM_TVTP_APP + 61;
 static void PrintChannel(std::ostringstream& output, const WCHAR* szDriver, const TVTest::ChannelInfo& ch);
 std::string MsecToTime(int msec);
 std::string SystemTimeToTimeString(const SYSTEMTIME& st);
-std::string GetTvtpPosition();
-std::string GetTvtpDuration();
+long GetTvtpPosition();
+long GetTvtpDuration();
 std::wstring convertUtf8ToWstring(const std::string& utf8);
 std::string convertWstringToUtf8(const std::wstring& wstr);
 static void SimulateDropFiles(HWND hwndTarget, const std::wstring& filePath);
@@ -153,9 +154,25 @@ void CHttpRemocon::StartHttpServer()
             m_pApp->SetChannel(0, 0);
 
             // ドラッグアンドドロップとしてファイルを開く
-            HWND hwndTarget = FindWindow(L"TVTest Window", NULL);
-            if (hwndTarget) {
-                SimulateDropFiles(hwndTarget, filePath);
+            HWND hwndDnd = FindWindow(L"TVTest Window", NULL);
+            if (!hwndDnd) {
+                res.status = 500;
+                res.set_content("Failed FindWindow", "text/plain");
+                return;
+            }
+
+            SimulateDropFiles(hwndDnd, filePath);
+
+            HWND hwndFrame = FindWindow(TEXT("TvtPlay Frame"), NULL);
+            int retry = 0;
+            while (!SendMessage(hwndFrame, WM_TVTP_IS_OPEN, 0, 0)) {
+                retry++;
+                if (retry > 5) {
+                    res.status = 500;
+                    res.set_content("Failed Open", "text/plain");
+                    return;
+                }
+                Sleep(500);
             }
 
             res.status = 200;
@@ -185,13 +202,13 @@ void CHttpRemocon::StartHttpServer()
             });
 
         m_server.Get("/play/pos", [this](const httplib::Request& req, httplib::Response& res) {
-            auto str = GetTvtpPosition();
-            if (str.empty()) {
+            auto pos = GetTvtpPosition();
+            if (pos < 0) {
                 res.status = 500;
                 res.set_content("Failed FindWindow: TvtPlay Frame", "text/plain");
                 return;
             }
-            res.set_content(str, "text/plain");
+            res.set_content(MsecToTime(pos), "text/plain");
             res.status = 200;
             });
 
@@ -517,12 +534,14 @@ void CHttpRemocon::StartHttpServer()
             // TVTPlay
             {
                 auto elapsed = GetTvtpPosition();
-                if (!elapsed.empty()) {
-                    wss << "\"elapsed_time\":\"" << convertUtf8ToWstring(elapsed) << "\",";
+                if (elapsed >= 0) {
+                    wss << "\"elapsed_time\":\"" << convertUtf8ToWstring(MsecToTime(elapsed)) << "\",";
+                    wss << "\"elapsed_ms\":" << elapsed << ",";
                 }
                 auto total = GetTvtpDuration();
-                if (!total.empty()) {
-                    wss << "\"total_time\":\"" << convertUtf8ToWstring(total) << "\",";
+                if (total >= 0) {
+                    wss << "\"total_time\":\"" << convertUtf8ToWstring(MsecToTime(total)) << "\",";
+                    wss << "\"total_ms\":" << total << ",";
                 }
             }
 
@@ -589,24 +608,22 @@ std::string SystemTimeToTimeString(const SYSTEMTIME& st) {
     return std::string(timeBuffer);
 }
 
-std::string GetTvtpPosition() {
+long GetTvtpPosition() {
     HWND hwnd = FindWindow(TEXT("TvtPlay Frame"), NULL);
     if (hwnd == NULL) {
-        return std::string();
+        return -1;
     }
 
-    int msec = SendMessage(hwnd, WM_TVTP_GET_POSITION, 0, 0);
-    return MsecToTime(msec);
+    return SendMessage(hwnd, WM_TVTP_GET_POSITION, 0, 0);
 }
 
-std::string GetTvtpDuration() {
+long GetTvtpDuration() {
     HWND hwnd = FindWindow(TEXT("TvtPlay Frame"), NULL);
     if (hwnd == NULL) {
-        return std::string();
+        return -1;
     }
 
-    int msec = SendMessage(hwnd, WM_TVTP_GET_DURATION, 0, 0);
-    return MsecToTime(msec);
+    return SendMessage(hwnd, WM_TVTP_GET_DURATION, 0, 0);
 }
 
 
