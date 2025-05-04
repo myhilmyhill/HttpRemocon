@@ -31,7 +31,7 @@ static const UINT WM_TVTP_SEEK_ABSOLUTE = WM_TVTP_APP + 61;
 
 static void PrintChannel(std::ostringstream& output, const WCHAR* szDriver, const TVTest::ChannelInfo& ch);
 std::string MsecToTime(int msec);
-std::string SystemTimeToTimeString(const SYSTEMTIME& st);
+std::wstring SystemTimeToIsoString(const SYSTEMTIME& st);
 long GetTvtpPosition();
 long GetTvtpDuration();
 std::wstring convertUtf8ToWstring(const std::string& utf8);
@@ -502,7 +502,7 @@ void CHttpRemocon::StartHttpServer()
                 info.pszEventName = eventName;
                 if (m_pApp->GetCurrentProgramInfo(&info) && info.pszEventName && info.pszEventName[0] != '\0') {
                     wss << "\"current_event_name\":\"" << EscapeJsonString(info.pszEventName) << "\",";
-                    wss << "\"current_event_start_time\":\"" << convertUtf8ToWstring(SystemTimeToTimeString(info.StartTime)) << "\",";
+                    wss << "\"current_event_start_time\":\"" << SystemTimeToIsoString(info.StartTime) << "\",";
                 }
             }
 
@@ -515,7 +515,7 @@ void CHttpRemocon::StartHttpServer()
                 info.pszEventName = eventName;
                 if (m_pApp->GetCurrentProgramInfo(&info, true) && info.pszEventName && info.pszEventName[0] != '\0') {
                     wss << "\"next_event_name\":\"" << EscapeJsonString(info.pszEventName) << "\",";
-                    wss << "\"next_event_start_time\":\"" << convertUtf8ToWstring(SystemTimeToTimeString(info.StartTime)) << "\",";
+                    wss << "\"next_event_start_time\":\"" << SystemTimeToIsoString(info.StartTime) << "\",";
                 }
             }
 
@@ -599,13 +599,18 @@ std::string MsecToTime(int msec) {
     return oss.str();
 }
 
-std::string SystemTimeToTimeString(const SYSTEMTIME& st) {
-    char timeBuffer[100];
+std::wstring SystemTimeToIsoString(const SYSTEMTIME& st) {
+    wchar_t dateBuffer[100];
+    wchar_t timeBuffer[100];
 
-    // "HH:mm:ss" フォーマットで時間だけ取得
-    GetTimeFormatA(LOCALE_USER_DEFAULT, 0, &st, "HH:mm", timeBuffer, sizeof(timeBuffer));
+    GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, 0, &st, L"yyyy-MM-dd", dateBuffer, sizeof(dateBuffer) / sizeof(dateBuffer[0]), nullptr);
+    GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT, 0, &st, L"HH':'mm':'ss", timeBuffer, sizeof(timeBuffer) / sizeof(timeBuffer[0]));
 
-    return std::string(timeBuffer);
+    std::wostringstream oss;
+    oss << std::wstring(dateBuffer).c_str() << L'T' << std::wstring(timeBuffer).c_str()
+        << L"+09:00";
+
+    return oss.str();
 }
 
 long GetTvtpPosition() {
