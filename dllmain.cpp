@@ -496,13 +496,24 @@ void CHttpRemocon::StartHttpServer()
             // 今の番組
             {
                 static constexpr int maxEventName = 1000;
+                static constexpr int maxEventText = 10000;
+                static constexpr int maxEventExtText = 10000;
                 WCHAR eventName[maxEventName] = {};
+                WCHAR eventText[maxEventText] = {};
+                WCHAR eventExtText[maxEventExtText] = {};
                 TVTest::ProgramInfo info = {};
                 info.MaxEventName = maxEventName;
                 info.pszEventName = eventName;
+                info.MaxEventText = maxEventText;
+                info.pszEventText = eventText;
+                info.MaxEventExtText = maxEventExtText;
+                info.pszEventExtText = eventExtText;
                 if (m_pApp->GetCurrentProgramInfo(&info) && info.pszEventName && info.pszEventName[0] != '\0') {
                     wss << "\"current_event_name\":\"" << EscapeJsonString(info.pszEventName) << "\",";
                     wss << "\"current_event_start_time\":\"" << SystemTimeToIsoString(info.StartTime) << "\",";
+                    wss << "\"current_event_text\":\"" << EscapeJsonString(info.pszEventText) << "\",";
+                    wss << "\"current_event_ext_text\":\"" << EscapeJsonString(info.pszEventExtText) << "\",";
+                    wss << "\"current_event_duration\":" << info.Duration << ",";
                 }
             }
 
