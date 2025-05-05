@@ -130,9 +130,9 @@ public:
     std::string GetTOTTime() {
         LibISDB::DateTime time;
         if (Analyzer->GetInterpolatedTOTTime(&time)) {
-            char buffer[20] = {};
+            char buffer[std::size("yyyy-mm-ddThh:mm:ss+09:00")] = {};
             const std::tm tm = time.ToTm();
-            std::strftime(buffer, sizeof(buffer), "%Y/%m/%d %H:%M:%S", &tm);
+            std::strftime(std::data(buffer), std::size(buffer), "%FT%T+09:00", &tm);
             return std::string(buffer);
         }
         return std::string();

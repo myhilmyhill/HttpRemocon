@@ -611,11 +611,11 @@ std::string MsecToTime(int msec) {
 }
 
 std::wstring SystemTimeToIsoString(const SYSTEMTIME& st) {
-    wchar_t dateBuffer[100];
-    wchar_t timeBuffer[100];
+    wchar_t dateBuffer[std::size("yyyy-MM-dd")];
+    wchar_t timeBuffer[std::size("hh:mm:ss")];
 
-    GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, 0, &st, L"yyyy-MM-dd", dateBuffer, sizeof(dateBuffer) / sizeof(dateBuffer[0]), nullptr);
-    GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT, 0, &st, L"HH':'mm':'ss", timeBuffer, sizeof(timeBuffer) / sizeof(timeBuffer[0]));
+    GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, 0, &st, L"yyyy-MM-dd", std::data(dateBuffer), std::size(dateBuffer), nullptr);
+    GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT, 0, &st, L"HH':'mm':'ss", std::data(timeBuffer), std::size(timeBuffer));
 
     std::wostringstream oss;
     oss << std::wstring(dateBuffer).c_str() << L'T' << std::wstring(timeBuffer).c_str()
