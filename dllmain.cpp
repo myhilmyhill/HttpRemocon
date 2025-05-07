@@ -509,6 +509,8 @@ void CHttpRemocon::StartHttpServer()
                 info.MaxEventExtText = maxEventExtText;
                 info.pszEventExtText = eventExtText;
                 if (m_pApp->GetCurrentProgramInfo(&info) && info.pszEventName && info.pszEventName[0] != '\0') {
+                    wss << "\"current_event_id\":" << info.EventID << ",";
+                    wss << "\"current_event_service_id\":" << info.ServiceID << ",";
                     wss << "\"current_event_name\":\"" << EscapeJsonString(info.pszEventName) << "\",";
                     wss << "\"current_event_start_time\":\"" << SystemTimeToIsoString(info.StartTime) << "\",";
                     wss << "\"current_event_text\":\"" << EscapeJsonString(info.pszEventText) << "\",";
