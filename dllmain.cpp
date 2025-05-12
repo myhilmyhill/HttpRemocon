@@ -34,6 +34,8 @@ std::string MsecToTime(int msec);
 std::wstring SystemTimeToIsoString(const SYSTEMTIME& st);
 long GetTvtpPosition();
 long GetTvtpDuration();
+std::wstring GetTvtpStatus(long position, long duration);
+WORD GetTvtpStretch();
 std::wstring convertUtf8ToWstring(const std::string& utf8);
 std::string convertWstringToUtf8(const std::wstring& wstr);
 static void SimulateDropFiles(HWND hwndTarget, const std::wstring& filePath);
@@ -237,16 +239,14 @@ void CHttpRemocon::StartHttpServer()
             });
 
         m_server.Get("/play/speed", [this](const httplib::Request& req, httplib::Response& res) {
-            HWND hwnd = FindWindow(TEXT("TvtPlay Frame"), NULL);
-            if (hwnd == NULL) {
+            auto stretch = GetTvtpStretch();
+            if (stretch < 0) {
                 res.status = 500;
                 res.set_content("Failed FindWindow: TvtPlay Frame", "text/plain");
                 return;
             }
-
-            int stretch = HIWORD(SendMessage(hwnd, WM_TVTP_GET_STRETCH, 0, 0));
-            res.status = 200;
             res.set_content(std::to_string(stretch), "text/plain");
+            res.status = 200;
             });
 
         m_server.Post("/play/speed", [this](const httplib::Request& req, httplib::Response& res) {
@@ -545,7 +545,8 @@ void CHttpRemocon::StartHttpServer()
             }
 
             // TVTPlay
-            {
+            HWND hwndFrame = FindWindow(TEXT("TvtPlay Frame"), NULL);
+            if (SendMessage(hwndFrame, WM_TVTP_IS_OPEN, 0, 0)) {
                 auto elapsed = GetTvtpPosition();
                 if (elapsed >= 0) {
                     wss << "\"elapsed_time\":\"" << convertUtf8ToWstring(MsecToTime(elapsed)) << "\",";
@@ -556,6 +557,10 @@ void CHttpRemocon::StartHttpServer()
                     wss << "\"total_time\":\"" << convertUtf8ToWstring(MsecToTime(total)) << "\",";
                     wss << "\"total_ms\":" << total << ",";
                 }
+                auto status = GetTvtpStatus(elapsed, total);
+                wss << "\"play_status\":\"" << status << "\",";
+                auto speed = GetTvtpStretch();
+                wss << "\"speed\":" << speed << ",";
             }
 
             // TOT
@@ -644,6 +649,29 @@ long GetTvtpDuration() {
     return SendMessage(hwnd, WM_TVTP_GET_DURATION, 0, 0);
 }
 
+std::wstring GetTvtpStatus(long position, long duration) {
+    if (position == -1) {
+        return std::wstring();
+    }
+    if (position >= duration || (position == 0 && duration == 0)) {
+        return L"finished";
+    }
+
+    HWND hwnd = FindWindow(TEXT("TvtPlay Frame"), NULL);
+    if (hwnd == NULL) {
+        return std::wstring();
+    }
+    auto isPaused = SendMessage(hwnd, WM_TVTP_IS_PAUSED, 0, 0) == 1;
+    return isPaused ? L"paused" : L"playing";
+}
+
+WORD GetTvtpStretch() {
+    HWND hwnd = FindWindow(TEXT("TvtPlay Frame"), NULL);
+    if (hwnd == NULL) {
+        return -1;
+    }
+    return HIWORD(SendMessage(hwnd, WM_TVTP_GET_STRETCH, 0, 0));
+}
 
 void PrintChannel(std::ostringstream& output, const WCHAR* szDriver, const TVTest::ChannelInfo& ch) {
     std::string sDriver = WideCharToUTF8(szDriver);
