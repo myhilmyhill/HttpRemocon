@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<meta charset="utf-8">
+<link rel="icon" href="data:image/bmp;base64,Qk1WAAAAAAAAAD4AAAAoAAAACAAAAAYAAAABAAEAAAAAABgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP///wD/AAAA+wAAANUAAADVAAAAjwAAAP8AAAA=">
+<title>HttpRemocon</title>
+<style>
+  html {
+    height: 100%;
+    scrollbar-width: none;
+  }
+
+  body {
+    background: #000;
+    color: #fff;
+    display: flex;
+    flex-direction: column;
+    height: inherit;
+    margin: 0;
+  }
+
+  .recording {
+    border: solid red;
+    border-width: 0 4px;
+
+    #record-button {
+      background-color: red;
+    }
+  }
+
+  #cap-image {
+    cursor: pointer;
+    flex: 1;
+    height: inherit;
+    width: fit-content;
+    margin: auto;
+    user-select: none;
+
+    &:not([srcset]) {
+      width: 100%;
+    }
+
+    .loading & {
+      opacity: 0.5;
+    }
+  }
+
+  #status-dialog {
+    margin-bottom: 0;
+    width: 100%;
+  }
+
+  #captions-dialog {
+    margin-right: 0;
+    height: 100%;
+    width: 30%
+  }
+
+  #channels-dialog {
+    margin-left: 0;
+  }
+</style>
+<script>
+  'use strict'
+  async function request(url, method = 'GET', body = null) {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 5000)
+    let response = await fetch(url, { method, body, signal: controller.signal })
+    if (response.ok) {
+      clearTimeout(timeoutId)
+      return await response.text()
+    } else {
+      throw Error(await response.text())
+    }
+  }
+  class HttpRemocon {
+    static host = window.location.origin
+    static async getRoot() { return request(`${this.host}/`) }
+    static async closeTuner() { return request(`${this.host}/`, 'POST', 'close') }
+    static async sleep() { return request(`${this.host}/`, 'POST', 'sleep') }
+    static async setPlay(filePath) { return request(`${this.host}/play`, 'POST', filePath) }
+    static async getPlayPause() { return request(`${this.host}/play/pause`) }
+    static async setPlayPause() { return request(`${this.host}/play/pause`, 'POST', ' ') }
+    static async getPlayPos() { return request(`${this.host}/play/pos`) }
+    static async setPlayPos(position) { return request(`${this.host}/play/pos`, 'POST', position) }
+    static async getPlaySpeed() { return request(`${this.host}/play/speed`) }
+    static async setPlaySpeed(speed) { return request(`${this.host}/play/speed`, 'POST', speed) }
+    static async getVolume() { return request(`${this.host}/vol`) }
+    static async setVolume(volume) { return request(`${this.host}/vol`, 'POST', volume) }
+    static async getChannel() { return request(`${this.host}/ch`) }
+    static async setChannel(channel) { return request(`${this.host}/ch`, 'POST', channel) }
+    static async getRec() { return request(`${this.host}/rec`) }
+    static async startRec() { return request(`${this.host}/rec`, 'POST', 'start') }
+    static async stopRec() { return request(`${this.host}/rec`, 'POST', 'stop') }
+    static async setViewPanel() { return request(`${this.host}/view/panel`, 'POST', '-') }
+    static async resetAll() { return request(`${this.host}/view/reset`, 'POST', '0') }
+    static async reset() { return request(`${this.host}/view/reset`, 'POST', '1') }
+    static async getCaptions() { return request(`${this.host}/captions`) }
+    static async clearCaptions() { return request(`${this.host}/captions`, 'DELETE') }
+    static async getStatus() { return request(`${this.host}/status`) }
+    static async saveCap() {
+      const response = await fetch(`${this.host}/view/cap`, { method: 'POST', body: '-' })
+      if (response.ok) return await response.blob()
+      else throw new Error(await response.text())
+    }
+  }
+
+  async function init(host) {
+    const prev = HttpRemocon.host
+    HttpRemocon.host = host
+    document.getElementById('host').value = HttpRemocon.host
+
+    try {
+      await HttpRemocon.getRoot()
+    } catch (e) {
+      init(prev)
+      throw e
+    }
+    initChannelList()
+    updateRecordButton()
+    document.title = `HttpRemocon @ ${HttpRemocon.host}`
+  }
+
+  async function initChannelList() {
+    const lines = (await HttpRemocon.getChannel()).split('\n')
+    const channelList = document.getElementById('channel-list')
+    channelList.innerHTML = ''
+    lines.slice(2).forEach((channelLine) => {
+      if (channelLine) {
+        const channel = channelLine.split(':')[0]
+        const template = document.getElementById('channel-list-item').content.cloneNode(true);
+        const link = template.querySelector('.channel-name')
+        link.textContent = channelLine
+        link.onclick = (event) => {
+          HttpRemocon.setChannel(channel)
+          const dialog = document.getElementById('channels-dialog')
+          dialog.close()
+        }
+        channelList.appendChild(template)
+      }
+    })
+  }
+
+  async function toggleRecording() {
+    await (document.body.classList.contains('recording') ? HttpRemocon.stopRec() : HttpRemocon.startRec())
+    updateRecordButton()
+  }
+
+  async function updateRecordButton() {
+    const button = document.getElementById('record-button')
+    if (await HttpRemocon.getRec() === 'Recording') {
+      document.body.classList.add('recording')
+      button.textContent = `●${button.textContent.slice(1)}`
+    } else {
+      document.body.classList.remove('recording')
+      button.textContent = `○${button.textContent.slice(1)}`
+    }
+  }
+
+  async function setVolume(v) {
+    HttpRemocon.setVolume(document.getElementById('volume-slider').valueAsNumber += v)
+  }
+
+  async function fetchAndDisplayImage() {
+    const imgElement = document.getElementById('cap-image')
+    try {
+      document.body.classList.add('loading')
+      imgElement.srcset = `${URL.createObjectURL(await HttpRemocon.saveCap())} 1.5x`
+    } finally {
+      document.body.classList.remove('loading')
+    }
+  }
+
+  async function getAndRefreshStatus() {
+    const [st, c, cp, np, progress, play, sp] =
+      ['status', 'status-channel', 'status-current-program', 'status-next-program', 'program-progress', 'status-play', 'status-programs']
+      .map(id => document.getElementById(id))
+
+    try {
+      const s = JSON.parse(await HttpRemocon.getStatus())
+      sp.hidden = false
+      st.textContent = `ᵀₒᵀ${s.tot}　${s.signal_level} dB　${s.bit_rate} bps　D ${s.drop}　E ${s.error}　S ${s.scramble}`
+
+      if (c.textContent !== s.channel_name) c.textContent = s.channel_name ?? 'Channels';
+
+      const cpt = s.current_event_name ? `${s.current_event_start_time} ${s.current_event_name}` : ''
+      if (cp.textContent !== cpt) {
+        cp.textContent = cpt
+        document.getElementById('enabled-caption-dialog').checked = cpt.includes('[字]')
+      }
+
+      const cptt = s.current_event_name ? `${s.current_event_text}\n\n${s.current_event_ext_text}` : ''
+      if (cp.title !== cptt) cp.title = cptt
+
+      const npt = s.next_event_name ? `　${s.next_event_start_time} ${s.next_event_name}` : ''
+      if (np.textContent !== npt) np.textContent = npt
+
+      const nptt = s.current_event_name ? `${s.next_event_text}\n\n${s.next_event_ext_text}` : ''
+      if (np.title !== nptt) np.title = nptt
+
+      const min = new Date(s.current_event_start_time).getTime()
+      progress.max = new Date(s.next_event_start_time).getTime() - min
+      progress.value = new Date(s.tot).getTime() - min
+
+      play.hidden = !s.play_status
+      if (!play.hidden) {
+        const t = document.getElementById('time')
+        const progress = document.getElementById('play-progress')
+        t.textContent = `${s.elapsed_time} / ${s.total_time} (${s.speed})`
+        progress.value = s.elapsed_ms
+        progress.max = s.total_ms
+      }
+    } catch {
+      st.textContent = ''
+      c.textContent = 'Channels'
+      sp.hidden = true
+    }
+  }
+
+  async function openCaptionsDialog() {
+    const [dialog, auto] = ['captions-dialog', 'enabled-autorefresh-captions'].map(id => document.getElementById(id))
+    dialog.showModal()
+    auto.checked = true
+    getAndRefreshCaptions()
+  }
+
+  async function getAndRefreshCaptions() {
+    document.getElementById('captions').textContent = await HttpRemocon.getCaptions()
+    requestAnimationFrame(() => {
+      const dialog = document.getElementById('captions-dialog')
+      dialog.scrollTop = dialog.scrollHeight
+    })
+  }
+
+  async function clearAndRefreshCaptions() {
+    HttpRemocon.clearCaptions()
+    document.getElementById('captions').textContent = ''
+  }
+
+  async function setPlayAndCloseDialog(file) {
+    await HttpRemocon.setPlay(file.replaceAll('"', ''))
+    document.getElementById('channels-dialog').close()
+  }
+
+  window.addEventListener('DOMContentLoaded', async () => {
+    await init(window.location.origin)
+    const [status, caption, enabledAutorefreshCaptions] =
+      ['status-dialog', 'captions-dialog', 'enabled-autorefresh-captions']
+      .map(id => document.getElementById(id))
+
+    status.addEventListener('wheel', (event) => {
+      if (event.deltaY < 0) setVolume(5)
+      else if (event.deltaY > 0) setVolume(-5)
+    })
+
+    document.addEventListener('mousedown', (event) => {
+      if (event.ctrlKey) return
+
+      const handler = {
+        3: () => HttpRemocon.setPlayPos(event.shiftKey ? '-15' : '-5'),
+        4: () => HttpRemocon.setPlayPos(event.shiftKey ? '+15' : '+15'),
+      }[event.button]
+      if (handler) {
+        event.preventDefault()
+        handler()
+      }
+    })
+
+    document.addEventListener('keydown', (event) => {
+      if (event.ctrlKey) return
+
+      const handler = {
+        ' ': () => HttpRemocon.setPlayPause(),
+        'v': () => fetchAndDisplayImage(),
+        'r': () => HttpRemocon.reset(),
+        'R': () => HttpRemocon.resetAll(),
+        'ArrowUp': () => setVolume(+5),
+        'ArrowDown': () => setVolume(-5),
+        'ArrowLeft': () => HttpRemocon.setPlayPos(event.shiftKey ? '-15' : '-5'),
+        'ArrowRight': () => HttpRemocon.setPlayPos(event.shiftKey ? '+15' : '+15'),
+      }[event.key]
+      if (handler) {
+        event.preventDefault()
+        handler()
+      }
+    })
+
+    document.addEventListener('mousemove', (event) => {
+      const closestDialog = document.elementFromPoint(event.clientX, event.clientY)?.closest('dialog') ?? false
+      if (!closestDialog) {
+        const threshold = 80
+        if ((window.innerHeight - event.clientY < threshold) && !status.open) {
+          status.showModal()
+          getAndRefreshStatus()
+          return
+        }
+
+        if (document.getElementById('enabled-caption-dialog').checked) {
+          const threshold = 100
+          if ((window.innerWidth - event.clientX < threshold) && !caption.open) {
+            openCaptionsDialog()
+            return
+          }
+        }
+      }
+    })
+
+    const closeDialog = (event) => {
+      for (const d of [status, caption]) if (d.open) {
+        const rect = d.getBoundingClientRect()
+        if (
+          event.clientX - 1 < rect.left ||
+          event.clientX + 1 > rect.right ||
+          event.clientY - 1 < rect.top ||
+          event.clientY + 1 > rect.bottom
+        ) d.close()
+      }
+    }
+    // dialogのmouseleaveだと右クリックで消えてしまう
+    document.addEventListener('mousemove', closeDialog)
+
+    // mousemoveだけだとウィンドウ外で消えない
+    caption.addEventListener('mouseleave', closeDialog)
+
+    caption.addEventListener('wheel', (event) => {
+      if (event.deltaY === 0) return
+      const isAtBottom = caption.scrollHeight - caption.scrollTop <= caption.clientHeight + 1
+      enabledAutorefreshCaptions.checked = isAtBottom && event.deltaY > 0
+    })
+
+    caption.addEventListener('mousedown', () => {
+      enabledAutorefreshCaptions.checked = false
+    })
+
+    setInterval(() => {
+      if (status.open) getAndRefreshStatus()
+    }, 1000)
+
+    setInterval(() => {
+      const on = document.getElementById('enabled-autorefresh-captions').checked
+      if (on && caption.open) getAndRefreshCaptions()
+    }, 3000)
+  })
+
+  window.onerror = (message) => {
+    document.getElementById('error').textContent = `${String(message)} ${String(Date())}`
+  }
+
+  window.addEventListener('unhandledrejection', (event) => {
+    document.getElementById('error').textContent = `${String(event.reason.message)} ${String(Date())}`
+  })
+</script>
+
+<div id="error" onclick="this.textContent = null" style="background: red; cursor: pointer"></div>
+<img id="cap-image" alt="Captured image will be displayed here" onclick="fetchAndDisplayImage()">
+
+<dialog id="status-dialog">
+  <div id="status"></div>
+
+  <details id="status-programs" hidden>
+    <summary>
+      <span id="status-current-program"></span>
+      <progress id="program-progress"></progress>
+    </summary>
+    <span id="status-next-program"></span>
+  </details>
+  <div id="status-play" hidden>
+    <button onclick="HttpRemocon.setPlayPause()">Play/Pause</button>
+    <span id="time"></span>
+    <progress id="play-progress" hidden></progress>
+    <input type="text" onkeydown="event.key === 'Enter' && HttpRemocon.setPlayPos(this.value)" placeholder="Seek">
+
+    Seek
+    <button onclick="HttpRemocon.setPlayPos(this.textContent)">-60</button>
+    <button onclick="HttpRemocon.setPlayPos(this.textContent)">-30</button>
+    <button onclick="HttpRemocon.setPlayPos(this.textContent)">-15</button>
+    <button onclick="HttpRemocon.setPlayPos(this.textContent)">-10</button>
+    <button onclick="HttpRemocon.setPlayPos(this.textContent)">-5</button>
+    <button onclick="HttpRemocon.setPlayPos(this.textContent)">+5</button>
+    <button onclick="HttpRemocon.setPlayPos(this.textContent)">+10</button>
+    <button onclick="HttpRemocon.setPlayPos(this.textContent)">+15</button>
+    <button onclick="HttpRemocon.setPlayPos(this.textContent)">+30</button>
+    <button onclick="HttpRemocon.setPlayPos(this.textContent)">+60</button>
+     
+    Speed
+    <button onclick="HttpRemocon.setPlaySpeed(this.textContent)">A</button>
+    <button onclick="HttpRemocon.setPlaySpeed(this.textContent)">B</button>
+    <button onclick="HttpRemocon.setPlaySpeed(this.textContent)">C</button>
+    <button onclick="HttpRemocon.setPlaySpeed(this.textContent)">D</button>
+    <button onclick="HttpRemocon.setPlaySpeed(this.textContent)">E</button>
+    <button onclick="HttpRemocon.setPlaySpeed(this.textContent)">F</button>
+    <button onclick="HttpRemocon.setPlaySpeed(this.textContent)">G</button>
+    <button onclick="HttpRemocon.setPlaySpeed(this.textContent)">I</button>
+    <button onclick="HttpRemocon.setPlaySpeed(this.textContent)">J</button>
+  </div>
+
+  <div>
+    <button id="show-host" commandfor="host-dialog" command="show-modal"
+      onclick="document.getElementById('host-dialog').showModal()">Host</button>
+    <button id="status-channel" commandfor="channels-dialog" command="show-modal">Channels</button>
+    <button id="status-channel2" onclick="document.getElementById('channels-dialog').showModal()">Channels</button>
+
+    <button onclick="HttpRemocon.reset()">Reset</button>
+    <!-- <button onclick="HttpRemocon.resetAll()">ResetAll</button> -->
+
+    <button id="record-button" onclick="toggleRecording()">○ Record</button>
+    <label>Volume
+      <input id="volume-slider" type="range" step="1" min="0" max="100" oninput="HttpRemocon.setVolume(this.title=this.value)" list="volume-values">
+    </label>
+    <datalist id="volume-values">
+      <option value="25">
+      <option value="50">
+      <option value="75">
+    </datalist>
+    
+    <label><input type="checkbox" id="enabled-caption-dialog">Captions</label>
+  </div>
+</dialog>
+
+<dialog id="captions-dialog">
+  <pre id="captions" style="white-space: break-spaces"></pre>
+  <button onclick="getAndRefreshCaptions()">Get</button>
+  <button onclick="clearAndRefreshCaptions()">Clear</button>
+  <label><input type="checkbox" id="enabled-autorefresh-captions" disabled>Auto↓</label>
+</dialog>
+
+<dialog id="channels-dialog" closedby="any">
+  <input type="text" onkeydown="event.key === 'Enter' && setPlayAndCloseDialog(this.value)" placeholder="File">
+  <div id="channel-list"></div>
+
+  <template id="channel-list-item">
+    <button class="channel-name" style="display: block"></button>
+  </template>
+</dialog>
+
+<dialog id="host-dialog" closedby="any">
+  <input id="host" type="text" onkeydown="event.key === 'Enter' && init(this.value)" placeholder="host">
+  <button onclick="HttpRemocon.closeTuner()">CloseTuner</button>
+  <button onclick="HttpRemocon.sleep()">Sleep</button>
+</dialog>
