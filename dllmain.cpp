@@ -522,13 +522,26 @@ void CHttpRemocon::StartHttpServer()
             // 次の番組
             {
                 static constexpr int maxEventName = 1000;
+                static constexpr int maxEventText = 10000;
+                static constexpr int maxEventExtText = 10000;
                 WCHAR eventName[maxEventName] = {};
+                WCHAR eventText[maxEventText] = {};
+                WCHAR eventExtText[maxEventExtText] = {};
                 TVTest::ProgramInfo info = {};
                 info.MaxEventName = maxEventName;
                 info.pszEventName = eventName;
+                info.MaxEventText = maxEventText;
+                info.pszEventText = eventText;
+                info.MaxEventExtText = maxEventExtText;
+                info.pszEventExtText = eventExtText;
                 if (m_pApp->GetCurrentProgramInfo(&info, true) && info.pszEventName && info.pszEventName[0] != '\0') {
+                    wss << "\"next_event_id\":" << info.EventID << ",";
+                    wss << "\"next_event_service_id\":" << info.ServiceID << ",";
                     wss << "\"next_event_name\":\"" << EscapeJsonString(info.pszEventName) << "\",";
                     wss << "\"next_event_start_time\":\"" << SystemTimeToIsoString(info.StartTime) << "\",";
+                    wss << "\"next_event_text\":\"" << EscapeJsonString(info.pszEventText) << "\",";
+                    wss << "\"next_event_ext_text\":\"" << EscapeJsonString(info.pszEventExtText) << "\",";
+                    wss << "\"next_event_duration\":" << info.Duration << ",";
                 }
             }
 
@@ -546,7 +559,7 @@ void CHttpRemocon::StartHttpServer()
 
             // TVTPlay
             HWND hwndFrame = FindWindow(TEXT("TvtPlay Frame"), NULL);
-            if (SendMessage(hwndFrame, WM_TVTP_IS_OPEN, 0, 0)) {
+            if (hwndFrame) {
                 auto elapsed = GetTvtpPosition();
                 if (elapsed >= 0) {
                     wss << "\"elapsed_time\":\"" << convertUtf8ToWstring(MsecToTime(elapsed)) << "\",";
