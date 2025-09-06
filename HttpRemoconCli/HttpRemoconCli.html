@@ -117,7 +117,7 @@
       throw e
     }
     initChannelList()
-    updateRecordButton()
+    getAndRefreshStatus()
     document.title = `HttpRemocon @ ${HttpRemocon.host}`
   }
 
@@ -159,6 +159,10 @@
 
   async function setVolume(v) {
     HttpRemocon.setVolume(document.getElementById('volume-slider').valueAsNumber += v)
+  }
+
+  async function setPlayPos(t) {
+    HttpRemocon.setPlayPos(t.replace('：', ':'))
   }
 
   async function fetchAndDisplayImage() {
@@ -210,6 +214,16 @@
         progress.value = s.elapsed_ms
         progress.max = s.total_ms
       }
+
+      const recButton = document.getElementById('record-button')
+      if (s.record_status !== 0) {
+        document.body.classList.add('recording')
+        recButton.textContent = `● ${s.record_time}`
+      } else if (document.body.classList.contains("recording")) {
+        document.body.classList.remove('recording')
+        recButton.textContent = `○ Record`
+      }
+
     } catch {
       st.textContent = ''
       c.textContent = 'Channels'
@@ -368,7 +382,7 @@
     <button onclick="HttpRemocon.setPlayPause()">Play/Pause</button>
     <span id="time"></span>
     <progress id="play-progress" hidden></progress>
-    <input type="text" onkeydown="event.key === 'Enter' && HttpRemocon.setPlayPos(this.value)" placeholder="Seek">
+    <input type="text" onkeydown="event.key === 'Enter' && setPlayPos(this.value)" placeholder="Seek">
 
     Seek
     <button onclick="HttpRemocon.setPlayPos(this.textContent)">-60</button>
@@ -398,7 +412,7 @@
     <button id="show-host" commandfor="host-dialog" command="show-modal"
       onclick="document.getElementById('host-dialog').showModal()">Host</button>
     <button id="status-channel" commandfor="channels-dialog" command="show-modal">Channels</button>
-    <button id="status-channel2" onclick="document.getElementById('channels-dialog').showModal()">Channels</button>
+    <!--<button id="status-channel2" onclick="document.getElementById('channels-dialog').showModal()">Channels</button>-->
 
     <button onclick="HttpRemocon.reset()">Reset</button>
     <!-- <button onclick="HttpRemocon.resetAll()">ResetAll</button> -->
