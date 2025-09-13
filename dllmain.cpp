@@ -825,7 +825,14 @@ LRESULT CALLBACK CHttpRemocon::EventCallback(UINT Event, LPARAM lParam1, LPARAM 
         if (pThis->m_fEnabled) {
             pThis->StartHttpServer();
 
-            if (!pThis->m_captions) pThis->m_captions = std::make_unique<Captions>();
+            // チャンネル名を追加して初期化
+            TVTest::ChannelInfo info = {};
+            std::wstring channel;
+            if (pThis->m_pApp->GetCurrentChannelInfo(&info) && info.szChannelName && info.szChannelName[0] != '\0') {
+                channel = info.szChannelName;
+                pThis->m_captions = std::make_unique<Captions>(L"-- " + channel + L" --\n\n");
+            }
+            pThis->m_captions = std::make_unique<Captions>();
             pThis->m_pApp->SetStreamCallback(0, pThis->m_captions->StreamCallback, pThis->m_captions.get());
         }
         else {
@@ -834,6 +841,19 @@ LRESULT CALLBACK CHttpRemocon::EventCallback(UINT Event, LPARAM lParam1, LPARAM 
             pThis->m_captions.reset();
         }
         return TRUE;
+
+    case TVTest::EVENT_CHANNELCHANGE:
+        pThis->m_pApp->SetStreamCallback(TVTest::STREAM_CALLBACK_REMOVE, pThis->m_captions->StreamCallback, nullptr);
+        std::wstring prevCaptions = pThis->m_captions->GetStockedCaptions();
+        
+        // チャンネル名を追加して初期化
+        TVTest::ChannelInfo info = {};
+        std::wstring channel;
+        if (pThis->m_pApp->GetCurrentChannelInfo(&info) && info.szChannelName && info.szChannelName[0] != '\0') {
+            channel = info.szChannelName;
+        }
+        pThis->m_captions = std::make_unique<Captions>(prevCaptions + L"\n-- " + channel + L" --\n");
+        pThis->m_pApp->SetStreamCallback(0, pThis->m_captions->StreamCallback, pThis->m_captions.get());
     }
 
     return 0;

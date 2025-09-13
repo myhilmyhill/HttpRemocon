@@ -98,10 +98,15 @@ class Captions {
         }
         std::wstring GetStockedCaptions() { return wss.str(); }
         void ClearStockedCaptions() { wss.str(L""); wss.clear(); }
+        void InitCaptions(std::wstring captions) {
+            wss.str(captions);
+            wss.clear(); // ストリーム状態をリセット
+            wss.seekp(0, std::ios::end); // 追記位置を末尾に移動
+        }
     } CaptionHandler;
 
 public:
-    Captions() {
+    Captions(std::wstring captions = L"") {
         // 渡した先で unique_ptr として登録されるので、 delete しない
         auto Source = new StreamSourceFilter;
         auto Parser = new TSPacketParserFilter;
@@ -118,6 +123,8 @@ public:
         Caption->SetCaptionHandler(&CaptionHandler);
         Engine.SetStartStreamingOnSourceOpen(true);
         Engine.OpenSource(Stream);
+
+        CaptionHandler.InitCaptions(captions);
     }
 
     static BOOL CALLBACK StreamCallback(BYTE* pData, void* pClientData) {
