@@ -10,6 +10,10 @@
 #include <filesystem>
 #include <chrono>
 #include <limits>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <algorithm>
 #include "httplib.h"
 #include "Captions.cpp"
 
@@ -156,7 +160,7 @@ void CHttpRemocon::StartHttpServer()
             m_pApp->SetChannel(0, 0);
 
             // ドラッグアンドドロップとしてファイルを開く
-            HWND hwndDnd = FindWindow(L"TVTest Window", NULL);
+            HWND hwndDnd = FindWindowW(L"TVTest Window", NULL);
             if (!hwndDnd) {
                 res.status = 500;
                 res.set_content("Failed FindWindow", "text/plain");
@@ -165,7 +169,7 @@ void CHttpRemocon::StartHttpServer()
 
             SimulateDropFiles(hwndDnd, filePath);
 
-            HWND hwndFrame = FindWindow(TEXT("TvtPlay Frame"), NULL);
+            HWND hwndFrame = FindWindowW(L"TvtPlay Frame", NULL);
             int retry = 0;
             while (!SendMessage(hwndFrame, WM_TVTP_IS_OPEN, 0, 0)) {
                 retry++;
@@ -181,7 +185,7 @@ void CHttpRemocon::StartHttpServer()
             });
 
         m_server.Get("/play/pause", [this](const httplib::Request& req, httplib::Response& res) {
-            HWND hwnd = FindWindow(TEXT("TvtPlay Frame"), NULL);
+            HWND hwnd = FindWindowW(L"TvtPlay Frame", NULL);
             if (hwnd == NULL) {
                 res.status = 500;
                 res.set_content("Failed FindWindow: TvtPlay Frame", "text/plain");
@@ -215,7 +219,7 @@ void CHttpRemocon::StartHttpServer()
             });
 
         m_server.Post("/play/pos", [this](const httplib::Request& req, httplib::Response& res) {
-            HWND hwnd = FindWindow(TEXT("TvtPlay Frame"), NULL);
+            HWND hwnd = FindWindowW(L"TvtPlay Frame", NULL);
             if (hwnd == NULL) {
                 res.status = 500;
                 res.set_content("Failed FindWindow: TvtPlay Frame", "text/plain");
@@ -558,7 +562,7 @@ void CHttpRemocon::StartHttpServer()
             }
 
             // TVTPlay
-            HWND hwndFrame = FindWindow(TEXT("TvtPlay Frame"), NULL);
+            HWND hwndFrame = FindWindowW(L"TvtPlay Frame", NULL);
             if (hwndFrame) {
                 auto elapsed = GetTvtpPosition();
                 if (elapsed >= 0) {
@@ -645,7 +649,7 @@ std::wstring SystemTimeToIsoString(const SYSTEMTIME& st) {
 }
 
 long GetTvtpPosition() {
-    HWND hwnd = FindWindow(TEXT("TvtPlay Frame"), NULL);
+    HWND hwnd = FindWindowW(L"TvtPlay Frame", NULL);
     if (hwnd == NULL) {
         return -1;
     }
@@ -654,7 +658,7 @@ long GetTvtpPosition() {
 }
 
 long GetTvtpDuration() {
-    HWND hwnd = FindWindow(TEXT("TvtPlay Frame"), NULL);
+    HWND hwnd = FindWindowW(L"TvtPlay Frame", NULL);
     if (hwnd == NULL) {
         return -1;
     }
@@ -670,7 +674,7 @@ std::wstring GetTvtpStatus(long position, long duration) {
         return L"finished";
     }
 
-    HWND hwnd = FindWindow(TEXT("TvtPlay Frame"), NULL);
+    HWND hwnd = FindWindowW(L"TvtPlay Frame", NULL);
     if (hwnd == NULL) {
         return std::wstring();
     }
@@ -679,7 +683,7 @@ std::wstring GetTvtpStatus(long position, long duration) {
 }
 
 WORD GetTvtpStretch() {
-    HWND hwnd = FindWindow(TEXT("TvtPlay Frame"), NULL);
+    HWND hwnd = FindWindowW(L"TvtPlay Frame", NULL);
     if (hwnd == NULL) {
         return -1;
     }

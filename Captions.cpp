@@ -36,7 +36,7 @@ class Captions {
             uint8_t Language, const CharType* pText,
             const ARIBStringDecoder::FormatList* pFormatList) {
 #ifdef _DEBUG
-            OutputDebugStringW(pText);
+            OutputDebugStringW(reinterpret_cast<const wchar_t*>(pText));
 #endif
             const int Length = ::lstrlen(pText);
 
@@ -56,7 +56,11 @@ class Captions {
                     fClearLast = false;
                 }
 
-                std::wstring Buff(pText);
+                std::wstring Buff;
+                if (pText) {
+                    // CharType* ‚ð wchar_t* ‚ÉƒLƒƒƒXƒg‚µ‚Ä std::wstring ‚É•ÏŠ·
+                    Buff = std::wstring(reinterpret_cast<const wchar_t*>(pText));
+                }
 
                 if (m_fIgnoreSmall && !pParser->Is1Seg()) {
                     for (int i = static_cast<int>(pFormatList->size()) - 1; i >= 0; i--) {
@@ -79,7 +83,7 @@ class Captions {
                 for (size_t i = 0; i < Buff.length(); i++) {
                     if (Buff[i] == '\f') {
                         if (i == 0 && !fContinue) {
-                            Buff.replace(0, 1, TEXT("\n"));
+                            Buff.replace(0, 1, L"\n");
                             i++;
                         }
                         else {
