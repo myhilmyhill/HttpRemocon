@@ -52,1047 +52,1057 @@ std::wstring EscapeJsonString(const std::wstring& input);
 
 
 static std::wstring& trim(std::wstring& s) {
-    s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](wchar_t ch) { return !std::iswspace(ch); }));
-    s.erase(std::find_if(s.rbegin(), s.rend(), [](wchar_t ch) { return !std::iswspace(ch); }).base(), s.end());
-    return s;
+	s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](wchar_t ch) { return !std::iswspace(ch); }));
+	s.erase(std::find_if(s.rbegin(), s.rend(), [](wchar_t ch) { return !std::iswspace(ch); }).base(), s.end());
+	return s;
 }
 
 // プラグインクラス
 class CHttpRemocon : public TVTest::CTVTestPlugin
 {
-    bool m_fEnabled = false;
-    httplib::Server m_server;
-    std::thread m_serverThread;
-    std::unique_ptr<Captions> m_captions;
+	bool m_fEnabled = false;
+	httplib::Server m_server;
+	std::thread m_serverThread;
+	std::unique_ptr<Captions> m_captions;
 
-    static LRESULT CALLBACK EventCallback(UINT Event, LPARAM lParam1, LPARAM lParam2, void* pClientData);
-    static CHttpRemocon* GetThis(HWND hwnd);
-    void StartHttpServer();
-    void StopHttpServer();
-    std::string GetTunerList();
-    void SetChannel(const std::string& body, httplib::Response& res);
+	static LRESULT CALLBACK EventCallback(UINT Event, LPARAM lParam1, LPARAM lParam2, void* pClientData);
+	static CHttpRemocon* GetThis(HWND hwnd);
+	void StartHttpServer();
+	void StopHttpServer();
+	std::string GetTunerList();
+	void SetChannel(const std::string& body, httplib::Response& res);
 
 public:
-    bool GetPluginInfo(TVTest::PluginInfo* pInfo) override;
-    bool Initialize() override;
-    bool Finalize() override;
+	bool GetPluginInfo(TVTest::PluginInfo* pInfo) override;
+	bool Initialize() override;
+	bool Finalize() override;
 };
 
 
 bool CHttpRemocon::GetPluginInfo(TVTest::PluginInfo* pInfo)
 {
-    // プラグインの情報を返す
-    pInfo->Type = TVTest::PLUGIN_TYPE_NORMAL;
-    pInfo->Flags = TVTest::PLUGIN_FLAG_NONE;
-    pInfo->pszPluginName = L"HttpRemocon";
-    return true;
+	// プラグインの情報を返す
+	pInfo->Type = TVTest::PLUGIN_TYPE_NORMAL;
+	pInfo->Flags = TVTest::PLUGIN_FLAG_NONE;
+	pInfo->pszPluginName = L"HttpRemocon";
+	return true;
 }
 
 
 bool CHttpRemocon::Initialize()
 {
-    // 初期化処理
+	// 初期化処理
 
-    // イベントコールバック関数を登録
-    m_pApp->SetEventCallback(EventCallback, this);
+	// イベントコールバック関数を登録
+	m_pApp->SetEventCallback(EventCallback, this);
 
-    return true;
+	return true;
 }
 
 
 bool CHttpRemocon::Finalize()
 {
-    // 終了処理
-    if (m_fEnabled) {
-        StopHttpServer();
-        m_pApp->SetStreamCallback(TVTest::STREAM_CALLBACK_REMOVE, m_captions->StreamCallback, nullptr);
-        m_captions.reset();
-    }
+	// 終了処理
+	if (m_fEnabled) {
+		StopHttpServer();
+		m_pApp->SetStreamCallback(TVTest::STREAM_CALLBACK_REMOVE, m_captions->StreamCallback, nullptr);
+		m_captions.reset();
+	}
 
-    return true;
+	return true;
 }
 
 
 void CHttpRemocon::StartHttpServer()
 {
-    // サーバが実行されていない場合にスレッドを開始
-    if (m_serverThread.joinable()) {
-        return;  // サーバがすでに起動中の場合は何もしない
-    }
-
-    m_serverThread = std::thread([this]() {
-        m_server.Get("/", [this](const httplib::Request& req, httplib::Response& res) {
-            res.status = 200;
-            });
-
-        m_server.Post("/", [this](const httplib::Request& req, httplib::Response& res) {
-            if (req.body == "close") {
-                m_pApp->SetDriverName(nullptr);
-                res.status = 200;
-            }
-            else if (req.body == "sleep") {
-                // レスポンスを返すためスリープ処理を別スレッドで実行
-                std::thread([this]() {
-                    m_pApp->SetDriverName(nullptr);
-
-                    // 画面オフにならずモダンスタンバイになるらしい
-                    SendNotifyMessage(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2);
-                    }).detach();
-
-                res.status = 200;
-            }
-            else {
-                res.status = 400;
-                res.set_content("Invalid operation value", "text/plain");
-            }
-            });
-
-        m_server.Post("/play", [this](const httplib::Request& req, httplib::Response& res) {
-            std::wstring filePath = convertUtf8ToWstring(req.body);
-
-            // /tvtpipe はすでにあるものとみなす
-            if (!m_pApp->SetDriverName(L"BonDriver_Pipe.dll")) {
-                res.status = 500;
-                res.set_content("Failed SetDriverName", "text/plain");
-                return;
-            }
-            // ServiceId が正常に 0 なのにエラー発生が返る。エラーチェックはしない
-            m_pApp->SetChannel(0, 0);
-
-            // ドラッグアンドドロップとしてファイルを開く
-            HWND hwndDnd = FindWindowW(L"TVTest Window", NULL);
-            if (!hwndDnd) {
-                res.status = 500;
-                res.set_content("Failed FindWindow", "text/plain");
-                return;
-            }
-
-            SimulateDropFiles(hwndDnd, filePath);
-
-            HWND hwndFrame = FindWindowW(L"TvtPlay Frame", NULL);
-            int retry = 0;
-            while (!SendMessage(hwndFrame, WM_TVTP_IS_OPEN, 0, 0)) {
-                retry++;
-                if (retry > 5) {
-                    res.status = 500;
-                    res.set_content("Failed Open", "text/plain");
-                    return;
-                }
-                Sleep(500);
-            }
-
-            res.status = 200;
-            });
-
-        m_server.Get("/play/pause", [this](const httplib::Request& req, httplib::Response& res) {
-            HWND hwnd = FindWindowW(L"TvtPlay Frame", NULL);
-            if (hwnd == NULL) {
-                res.status = 500;
-                res.set_content("Failed FindWindow: TvtPlay Frame", "text/plain");
-                return;
-            }
-
-            bool paused = SendMessage(hwnd, WM_TVTP_IS_PAUSED, 0, 0);
-            res.status = 200;
-            res.set_content(std::to_string(paused), "text/plain");
-            });
-
-        m_server.Post("/play/pause", [this](const httplib::Request& req, httplib::Response& res) {
-            // トグルしかできないので body は見ない
-            if (!m_pApp->DoCommand(L"tvtplay.tvtp:Pause")) {
-                res.status = 500;
-                res.set_content("Failed DoCommand: tvtplay.tvtp:Pause", "text/plain");
-                return;
-            }
-            res.status = 200;
-            });
-
-        m_server.Get("/play/pos", [this](const httplib::Request& req, httplib::Response& res) {
-            auto pos = GetTvtpPosition();
-            if (pos < 0) {
-                res.status = 500;
-                res.set_content("Failed FindWindow: TvtPlay Frame", "text/plain");
-                return;
-            }
-            res.set_content(MsecToTime(pos), "text/plain");
-            res.status = 200;
-            });
-
-        m_server.Post("/play/pos", [this](const httplib::Request& req, httplib::Response& res) {
-            HWND hwnd = FindWindowW(L"TvtPlay Frame", NULL);
-            if (hwnd == NULL) {
-                res.status = 500;
-                res.set_content("Failed FindWindow: TvtPlay Frame", "text/plain");
-                return;
-            }
-
-            const auto& command = req.body;
-            char sign = command[0] == '-' || command[0] == '+';
-            int msec = ParseTimeToMilliseconds(sign ? command.substr(1) : command);
-
-            if (sign || command.find(':') == std::string::npos) {
-                msec = command[0] == '-' ? -msec : msec;
-                SendMessage(hwnd, WM_TVTP_SEEK, 0, (LPARAM)msec);
-            }
-            else {
-                SendMessage(hwnd, WM_TVTP_SEEK_ABSOLUTE, 0, (LPARAM)msec);
-            }
-
-            // 現在時刻への反映に時間がかかるので返すのはやめる
-            res.status = 200;
-            });
-
-        m_server.Get("/play/speed", [this](const httplib::Request& req, httplib::Response& res) {
-            auto stretch = GetTvtpStretch();
-            if (stretch < 0) {
-                res.status = 500;
-                res.set_content("Failed FindWindow: TvtPlay Frame", "text/plain");
-                return;
-            }
-            res.set_content(std::to_string(stretch), "text/plain");
-            res.status = 200;
-            });
-
-        m_server.Post("/play/speed", [this](const httplib::Request& req, httplib::Response& res) {
-            // TvtPlay を見てもあんまり柔軟なことはできなそう
-            std::wstring command = L"tvtplay.tvtp:Stretch";
-            if (req.body.length() == 1 && 'A' <= req.body[0] && req.body[0] <= 'Z') {
-                command += req.body[0];
-            }
-
-            if (!m_pApp->DoCommand(command.c_str())) {
-                res.status = 500;
-                std::string error_message = "Failed DoCommand: " + convertWstringToUtf8(command);
-                res.set_content(error_message, "text/plain");
-                return;
-            }
-
-            res.status = 200;
-            });
-
-        m_server.Get("/vol", [this](const httplib::Request& req, httplib::Response& res) {
-            int vol = m_pApp->GetVolume();
-            res.set_content(std::to_string(vol), "text/plain");
-            res.status = 200;
-            });
-
-        m_server.Post("/vol", [this](const httplib::Request& req, httplib::Response& res) {
-            int volumeChange = std::stoi(req.body);
-            int currentVolume = m_pApp->GetVolume();
-
-            if (req.body[0] == '+' || req.body[0] == '-') {
-                // 相対値として設定
-                currentVolume += volumeChange;
-            }
-            else {
-                // 絶対値として設定
-                currentVolume = volumeChange;
-            }
-
-            // 音量が範囲内に収まるように制限
-            if (currentVolume < 0) currentVolume = 0;
-            if (currentVolume > 100) currentVolume = 100;
-
-            if (!m_pApp->SetVolume(currentVolume)) {
-                res.status = 500;
-                res.set_content("Failed SetVolume", "text/plain");
-                return;
-            }
-            res.set_content(std::to_string(currentVolume), "text/plain");
-
-            res.status = 200;
-            });
-
-        m_server.Get("/ch", [this](const httplib::Request& req, httplib::Response& res) {
-            res.set_content(GetTunerList(), "text/plain");
-            res.status = 200;
-            });
-
-        m_server.Post("/ch", [this](const httplib::Request& req, httplib::Response& res) {
-            SetChannel(req.body, res);
-            });
-
-        m_server.Get("/rec", [this](const httplib::Request& req, httplib::Response& res) {
-            TVTest::RecordStatusInfo status = {};
-            m_pApp->GetRecordStatus(&status);
-
-            res.status = 200;
-            switch (status.Status) {
-            case TVTest::RECORD_STATUS_NOTRECORDING:
-                res.set_content("Not recording", "text/plain");
-                return;
-
-            case TVTest::RECORD_STATUS_RECORDING:
-                res.set_content("Recording", "text/plain");
-                return;
-
-            case TVTest::RECORD_STATUS_PAUSED:
-                res.set_content("Paused", "text/plain");
-                return;
-
-            default:
-                res.status = 500;
-                res.set_content("Invalid status", "text/plain");
-                return;
-            }
-            });
-
-        m_server.Post("/rec", [this](const httplib::Request& req, httplib::Response& res) {
-            TVTest::RecordStatusInfo status = {};
-
-            if (req.body == "start") {
-                m_pApp->GetRecordStatus(&status);
-                if (status.Status == TVTest::RECORD_STATUS_RECORDING) {
-                    res.status = 400;
-                    res.set_content("Already start recording", "text/plain");
-                    return;
-                }
-
-                if (!m_pApp->DoCommand(L"TimeShiftRecording")) {
-                    res.status = 500;
-                    res.set_content("Failed DoCommand: TimeShiftRecording", "text/plain");
-                    return;
-                }
-
-                if (!m_pApp->DoCommand(L"RecordEvent")) {
-                    res.status = 500;
-                    res.set_content("Failed DoCommand: RecordEvent", "text/plain");
-                    return;
-                }
-
-                // 録画ファイル名を取得
-                WCHAR fileName[MAX_PATH] = {};
-                status.pszFileName = fileName;
-                status.MaxFileName = MAX_PATH;
-                m_pApp->GetRecordStatus(&status);
-
-                res.set_content(WideCharToUTF8(fileName), "text/plain");
-                res.status = 200;
-            }
-            else if (req.body == "stop") {
-
-                // 録画ファイル名を取得
-                WCHAR fileName[MAX_PATH] = {};
-                status.pszFileName = fileName;
-                status.MaxFileName = MAX_PATH;
-                m_pApp->GetRecordStatus(&status);
-
-                if (status.Status != TVTest::RECORD_STATUS_RECORDING) {
-                    res.status = 400;
-                    res.set_content("Not yet started recording", "text/plain");
-                    return;
-                }
-
-                if (!m_pApp->StopRecord()) {
-                    res.status = 500;
-                    res.set_content("Failed StopRecord", "text/plain");
-                    return;
-                }
-
-                res.set_content(WideCharToUTF8(fileName), "text/plain");
-                res.status = 200;
-            }
-            else {
-                res.status = 400;
-                res.set_content("Invalid operation value", "text/plain");
-            }
-            });
-
-        m_server.Get("/captions", [this](const httplib::Request& req, httplib::Response& res) {
-            auto caption = convertWstringToUtf8(m_captions->GetStockedCaptions());
-            res.set_content(caption, "text/plain; charset=utf-8");
-            res.status = 200;
-            });
-
-        m_server.Delete("/captions", [this](const httplib::Request& req, httplib::Response& res) {
-            m_captions->ClearStockedCaptions();
-            res.status = 200;
-            });
-
-        m_server.Post("/view/cap", [this](const httplib::Request& req, httplib::Response& res) {
-            std::future<std::vector<char>> futureResult = std::async(std::launch::async,
-                [this, &res]() {
-                    // たぶん保存したキャプチャのファイル名がわからない。
-                    // ファイルのタイムスタンプで頑張って探す。
-                    // CaptureImageをした後にSaveImageは時間差ができるのでダメだった
-                    auto saveStartTime = std::chrono::system_clock::now();
-
-                    auto saved = m_pApp->SaveImage();
-                    if (!saved) {
-                        res.status = 500;
-                        res.set_content("Failed SaveImage", "text/plain");
-                        return std::vector<char>{};
-                    }
-
-                    // 相対パスの場合、あきらめる
-                    WCHAR szFolder[MAX_PATH] = {};
-                    if (m_pApp->GetSetting(L"CaptureFolder", szFolder, MAX_PATH) < 1) {
-                        res.status = 500;
-                        res.set_content("Failed GetSetting; CaptureFolder", "text/plain");
-                        return std::vector<char>{};
-                    }
-
-                    auto bmpFilePath = findRecentBMPFile(std::wstring(szFolder), saveStartTime);
-                    if (bmpFilePath.empty()) {
-                        res.status = 500;
-                        res.set_content("Invalid bmp file path", "text/plain");
-                        return std::vector<char>{};
-                    }
-
-                    auto bmpData = readFile(bmpFilePath);
-                    if (bmpData.empty()) {
-                        res.status = 500;
-                        res.set_content("Failed to read bmp file", "text/plain");
-                        return std::vector<char>{};
-                    }
-
-                    return bmpData;
-                });
-            auto bmpData = futureResult.get();
-            if (bmpData.empty()) return;
-            res.set_content(bmpData.data(), bmpData.size(), "image/bmp");
-            res.status = 200;
-            });
-
-        m_server.Post("/view/panel", [this](const httplib::Request& req, httplib::Response& res) {
-            // トグルしかできないので body は見ない
-            if (!m_pApp->DoCommand(L"Panel")) {
-                res.status = 500;
-                res.set_content("Failed DoCommand: Panel", "text/plain");
-                return;
-            }
-
-            res.status = 200;
-            });
-
-        m_server.Post("/view/reset", [this](const httplib::Request& req, httplib::Response& res) {
-            TVTest::ResetFlag flag = std::stoi(req.body);
-            if (!m_pApp->Reset(flag)) {
-                res.status = 500;
-                res.set_content("Failed Reset", "text/plain");
-                return;
-            }
-
-            res.status = 200;
-            });
-
-        m_server.Get("/status", [this](const httplib::Request& req, httplib::Response& res) {
-            std::wstringstream wss;
-            wss << "{";
-
-            // 録画中
-            {
-                TVTest::RecordStatusInfo info = {};
-                if (m_pApp->GetRecordStatus(&info)) {
-                    wss << "\"record_status\":" << info.Status << ",";
-                    wss << "\"record_time\":" << info.RecordTime << ",";
-                }
-            }
-
-            // チャンネル
-            {
-                TVTest::ChannelInfo info = {};
-                if (m_pApp->GetCurrentChannelInfo(&info) && info.szChannelName && info.szChannelName[0] != '\0') {
-                    wss << "\"channel_name\":\"" << EscapeJsonString(info.szChannelName) << "\",";
-                }
-            }
-
-            // 今の番組
-            {
-                static constexpr int maxEventName = 1000;
-                static constexpr int maxEventText = 10000;
-                static constexpr int maxEventExtText = 10000;
-                WCHAR eventName[maxEventName] = {};
-                WCHAR eventText[maxEventText] = {};
-                WCHAR eventExtText[maxEventExtText] = {};
-                TVTest::ProgramInfo info = {};
-                info.MaxEventName = maxEventName;
-                info.pszEventName = eventName;
-                info.MaxEventText = maxEventText;
-                info.pszEventText = eventText;
-                info.MaxEventExtText = maxEventExtText;
-                info.pszEventExtText = eventExtText;
-                if (m_pApp->GetCurrentProgramInfo(&info) && info.pszEventName && info.pszEventName[0] != '\0') {
-                    wss << "\"current_event_id\":" << info.EventID << ",";
-                    wss << "\"current_event_service_id\":" << info.ServiceID << ",";
-                    wss << "\"current_event_name\":\"" << EscapeJsonString(info.pszEventName) << "\",";
-                    wss << "\"current_event_start_time\":\"" << SystemTimeToIsoString(info.StartTime) << "\",";
-                    wss << "\"current_event_text\":\"" << EscapeJsonString(info.pszEventText) << "\",";
-                    wss << "\"current_event_ext_text\":\"" << EscapeJsonString(info.pszEventExtText) << "\",";
-                    wss << "\"current_event_duration\":" << info.Duration << ",";
-                }
-            }
-
-            // 次の番組
-            {
-                static constexpr int maxEventName = 1000;
-                static constexpr int maxEventText = 10000;
-                static constexpr int maxEventExtText = 10000;
-                WCHAR eventName[maxEventName] = {};
-                WCHAR eventText[maxEventText] = {};
-                WCHAR eventExtText[maxEventExtText] = {};
-                TVTest::ProgramInfo info = {};
-                info.MaxEventName = maxEventName;
-                info.pszEventName = eventName;
-                info.MaxEventText = maxEventText;
-                info.pszEventText = eventText;
-                info.MaxEventExtText = maxEventExtText;
-                info.pszEventExtText = eventExtText;
-                if (m_pApp->GetCurrentProgramInfo(&info, true) && info.pszEventName && info.pszEventName[0] != '\0') {
-                    wss << "\"next_event_id\":" << info.EventID << ",";
-                    wss << "\"next_event_service_id\":" << info.ServiceID << ",";
-                    wss << "\"next_event_name\":\"" << EscapeJsonString(info.pszEventName) << "\",";
-                    wss << "\"next_event_start_time\":\"" << SystemTimeToIsoString(info.StartTime) << "\",";
-                    wss << "\"next_event_text\":\"" << EscapeJsonString(info.pszEventText) << "\",";
-                    wss << "\"next_event_ext_text\":\"" << EscapeJsonString(info.pszEventExtText) << "\",";
-                    wss << "\"next_event_duration\":" << info.Duration << ",";
-                }
-            }
-
-            // 信号
-            {
-                TVTest::StatusInfo status = {};
-                if (m_pApp->GetStatus(&status)) {
-                    wss << "\"signal_level\":" << status.SignalLevel << ",";
-                    wss << "\"drop\":" << status.DropPacketCount << ",";
-                    wss << "\"error\":" << status.ErrorPacketCount << ",";
-                    wss << "\"scramble\":" << status.ScramblePacketCount << ",";
-                    wss << "\"bit_rate\":" << status.BitRate << ",";
-                }
-            }
-
-            // TVTPlay
-            HWND hwndFrame = FindWindowW(L"TvtPlay Frame", NULL);
-            if (hwndFrame) {
-                auto elapsed = GetTvtpPosition();
-                if (elapsed >= 0) {
-                    wss << "\"elapsed_time\":\"" << convertUtf8ToWstring(MsecToTime(elapsed)) << "\",";
-                    wss << "\"elapsed_ms\":" << elapsed << ",";
-                }
-                auto total = GetTvtpDuration();
-                if (total >= 0) {
-                    wss << "\"total_time\":\"" << convertUtf8ToWstring(MsecToTime(total)) << "\",";
-                    wss << "\"total_ms\":" << total << ",";
-                }
-                auto status = GetTvtpStatus(elapsed, total);
-                wss << "\"play_status\":\"" << status << "\",";
-                auto speed = GetTvtpStretch();
-                wss << "\"speed\":" << speed << ",";
-            }
-
-            // TOT
-            {
-                auto tot = m_captions->GetTOTTime();
-                if (!tot.empty()) {
-                    wss << "\"tot\":\"" << convertUtf8ToWstring(tot) << "\",";
-                }
-            }
-
-            wss << "\"volume\":" << m_pApp->GetVolume();
-            wss << "}";
-
-            res.set_content(convertWstringToUtf8(wss.str()), "application/json");
-            res.status = 200;
-            });
-
-        m_server.set_exception_handler([](const auto& req, auto& res, std::exception_ptr ep) {
-            try {
-                std::rethrow_exception(ep);
-            }
-            catch (std::exception& e) {
-                const char* a = e.what();
-                auto w = ConvertToWString(a);
-                res.set_content(convertWstringToUtf8(w), "text/plain");
-            }
-            catch (...) {
-                res.set_content("Unknown Exception", "text/plain");
-            }
-            res.status = 500;
-            });
-
-        m_server.Get("/cli", [](const auto& req, auto& res) {
-            res.set_file_content("Plugins/HttpRemoconCli.html");
-            });
-        m_server.set_file_extension_and_mimetype_mapping("html", "text/html");
-        m_server.set_default_headers({
-            { "Access-Control-Allow-Origin", allowOrigin },
-            });
-        m_server.listen(defaultHost, defaultPort);
-        });
+	// サーバが実行されていない場合にスレッドを開始
+	if (m_serverThread.joinable()) {
+		return;  // サーバがすでに起動中の場合は何もしない
+	}
+
+	m_serverThread = std::thread([this]() {
+		m_server.Post("/", [this](const httplib::Request& req, httplib::Response& res) {
+			if (req.body == "close") {
+				m_pApp->SetDriverName(nullptr);
+				res.status = 200;
+			}
+			else if (req.body == "sleep") {
+				// レスポンスを返すためスリープ処理を別スレッドで実行
+				std::thread([this]() {
+					m_pApp->SetDriverName(nullptr);
+
+					// 画面オフにならずモダンスタンバイになるらしい
+					SendNotifyMessage(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2);
+					}).detach();
+
+				res.status = 200;
+			}
+			else {
+				res.status = 400;
+				res.set_content("Invalid operation value", "text/plain");
+			}
+			});
+
+		m_server.Post("/play", [this](const httplib::Request& req, httplib::Response& res) {
+			std::wstring filePath = convertUtf8ToWstring(req.body);
+
+			// /tvtpipe はすでにあるものとみなす
+			if (!m_pApp->SetDriverName(L"BonDriver_Pipe.dll")) {
+				res.status = 500;
+				res.set_content("Failed SetDriverName", "text/plain");
+				return;
+			}
+			// ServiceId が正常に 0 なのにエラー発生が返る。エラーチェックはしない
+			m_pApp->SetChannel(0, 0);
+
+			// ドラッグアンドドロップとしてファイルを開く
+			HWND hwndDnd = FindWindowW(L"TVTest Window", NULL);
+			if (!hwndDnd) {
+				res.status = 500;
+				res.set_content("Failed FindWindow", "text/plain");
+				return;
+			}
+
+			SimulateDropFiles(hwndDnd, filePath);
+
+			HWND hwndFrame = FindWindowW(L"TvtPlay Frame", NULL);
+			int retry = 0;
+			while (!SendMessage(hwndFrame, WM_TVTP_IS_OPEN, 0, 0)) {
+				retry++;
+				if (retry > 5) {
+					res.status = 500;
+					res.set_content("Failed Open", "text/plain");
+					return;
+				}
+				Sleep(500);
+			}
+
+			res.status = 200;
+			});
+
+		m_server.Get("/play/pause", [this](const httplib::Request& req, httplib::Response& res) {
+			HWND hwnd = FindWindowW(L"TvtPlay Frame", NULL);
+			if (hwnd == NULL) {
+				res.status = 500;
+				res.set_content("Failed FindWindow: TvtPlay Frame", "text/plain");
+				return;
+			}
+
+			bool paused = SendMessage(hwnd, WM_TVTP_IS_PAUSED, 0, 0);
+			res.status = 200;
+			res.set_content(std::to_string(paused), "text/plain");
+			});
+
+		m_server.Post("/play/pause", [this](const httplib::Request& req, httplib::Response& res) {
+			// トグルしかできないので body は見ない
+			if (!m_pApp->DoCommand(L"tvtplay.tvtp:Pause")) {
+				res.status = 500;
+				res.set_content("Failed DoCommand: tvtplay.tvtp:Pause", "text/plain");
+				return;
+			}
+			res.status = 200;
+			});
+
+		m_server.Get("/play/pos", [this](const httplib::Request& req, httplib::Response& res) {
+			auto pos = GetTvtpPosition();
+			if (pos < 0) {
+				res.status = 500;
+				res.set_content("Failed FindWindow: TvtPlay Frame", "text/plain");
+				return;
+			}
+			res.set_content(MsecToTime(pos), "text/plain");
+			res.status = 200;
+			});
+
+		m_server.Post("/play/pos", [this](const httplib::Request& req, httplib::Response& res) {
+			HWND hwnd = FindWindowW(L"TvtPlay Frame", NULL);
+			if (hwnd == NULL) {
+				res.status = 500;
+				res.set_content("Failed FindWindow: TvtPlay Frame", "text/plain");
+				return;
+			}
+
+			const auto& command = req.body;
+			char sign = command[0] == '-' || command[0] == '+';
+			int msec = ParseTimeToMilliseconds(sign ? command.substr(1) : command);
+
+			if (sign || command.find(':') == std::string::npos) {
+				msec = command[0] == '-' ? -msec : msec;
+				SendMessage(hwnd, WM_TVTP_SEEK, 0, (LPARAM)msec);
+			}
+			else {
+				SendMessage(hwnd, WM_TVTP_SEEK_ABSOLUTE, 0, (LPARAM)msec);
+			}
+
+			// 現在時刻への反映に時間がかかるので返すのはやめる
+			res.status = 200;
+			});
+
+		m_server.Get("/play/speed", [this](const httplib::Request& req, httplib::Response& res) {
+			auto stretch = GetTvtpStretch();
+			if (stretch < 0) {
+				res.status = 500;
+				res.set_content("Failed FindWindow: TvtPlay Frame", "text/plain");
+				return;
+			}
+			res.set_content(std::to_string(stretch), "text/plain");
+			res.status = 200;
+			});
+
+		m_server.Post("/play/speed", [this](const httplib::Request& req, httplib::Response& res) {
+			// TvtPlay を見てもあんまり柔軟なことはできなそう
+			std::wstring command = L"tvtplay.tvtp:Stretch";
+			if (req.body.length() == 1 && 'A' <= req.body[0] && req.body[0] <= 'Z') {
+				command += req.body[0];
+			}
+
+			if (!m_pApp->DoCommand(command.c_str())) {
+				res.status = 500;
+				std::string error_message = "Failed DoCommand: " + convertWstringToUtf8(command);
+				res.set_content(error_message, "text/plain");
+				return;
+			}
+
+			res.status = 200;
+			});
+
+		m_server.Get("/vol", [this](const httplib::Request& req, httplib::Response& res) {
+			int vol = m_pApp->GetVolume();
+			res.set_content(std::to_string(vol), "text/plain");
+			res.status = 200;
+			});
+
+		m_server.Post("/vol", [this](const httplib::Request& req, httplib::Response& res) {
+			int volumeChange = std::stoi(req.body);
+			int currentVolume = m_pApp->GetVolume();
+
+			if (req.body[0] == '+' || req.body[0] == '-') {
+				// 相対値として設定
+				currentVolume += volumeChange;
+			}
+			else {
+				// 絶対値として設定
+				currentVolume = volumeChange;
+			}
+
+			// 音量が範囲内に収まるように制限
+			if (currentVolume < 0) currentVolume = 0;
+			if (currentVolume > 100) currentVolume = 100;
+
+			if (!m_pApp->SetVolume(currentVolume)) {
+				res.status = 500;
+				res.set_content("Failed SetVolume", "text/plain");
+				return;
+			}
+			res.set_content(std::to_string(currentVolume), "text/plain");
+
+			res.status = 200;
+			});
+
+		m_server.Get("/ch", [this](const httplib::Request& req, httplib::Response& res) {
+			res.set_content(GetTunerList(), "text/plain");
+			res.status = 200;
+			});
+
+		m_server.Post("/ch", [this](const httplib::Request& req, httplib::Response& res) {
+			SetChannel(req.body, res);
+			});
+
+		m_server.Get("/rec", [this](const httplib::Request& req, httplib::Response& res) {
+			TVTest::RecordStatusInfo status = {};
+			m_pApp->GetRecordStatus(&status);
+
+			res.status = 200;
+			switch (status.Status) {
+			case TVTest::RECORD_STATUS_NOTRECORDING:
+				res.set_content("Not recording", "text/plain");
+				return;
+
+			case TVTest::RECORD_STATUS_RECORDING:
+				res.set_content("Recording", "text/plain");
+				return;
+
+			case TVTest::RECORD_STATUS_PAUSED:
+				res.set_content("Paused", "text/plain");
+				return;
+
+			default:
+				res.status = 500;
+				res.set_content("Invalid status", "text/plain");
+				return;
+			}
+			});
+
+		m_server.Post("/rec", [this](const httplib::Request& req, httplib::Response& res) {
+			TVTest::RecordStatusInfo status = {};
+
+			if (req.body == "start") {
+				m_pApp->GetRecordStatus(&status);
+				if (status.Status == TVTest::RECORD_STATUS_RECORDING) {
+					res.status = 400;
+					res.set_content("Already start recording", "text/plain");
+					return;
+				}
+
+				if (!m_pApp->DoCommand(L"TimeShiftRecording")) {
+					res.status = 500;
+					res.set_content("Failed DoCommand: TimeShiftRecording", "text/plain");
+					return;
+				}
+
+				if (!m_pApp->DoCommand(L"RecordEvent")) {
+					res.status = 500;
+					res.set_content("Failed DoCommand: RecordEvent", "text/plain");
+					return;
+				}
+
+				// 録画ファイル名を取得
+				WCHAR fileName[MAX_PATH] = {};
+				status.pszFileName = fileName;
+				status.MaxFileName = MAX_PATH;
+				m_pApp->GetRecordStatus(&status);
+
+				res.set_content(WideCharToUTF8(fileName), "text/plain");
+				res.status = 200;
+			}
+			else if (req.body == "stop") {
+
+				// 録画ファイル名を取得
+				WCHAR fileName[MAX_PATH] = {};
+				status.pszFileName = fileName;
+				status.MaxFileName = MAX_PATH;
+				m_pApp->GetRecordStatus(&status);
+
+				if (status.Status != TVTest::RECORD_STATUS_RECORDING) {
+					res.status = 400;
+					res.set_content("Not yet started recording", "text/plain");
+					return;
+				}
+
+				if (!m_pApp->StopRecord()) {
+					res.status = 500;
+					res.set_content("Failed StopRecord", "text/plain");
+					return;
+				}
+
+				res.set_content(WideCharToUTF8(fileName), "text/plain");
+				res.status = 200;
+			}
+			else {
+				res.status = 400;
+				res.set_content("Invalid operation value", "text/plain");
+			}
+			});
+
+		m_server.Get("/captions", [this](const httplib::Request& req, httplib::Response& res) {
+			auto caption = convertWstringToUtf8(m_captions->GetStockedCaptions());
+			res.set_content(caption, "text/plain; charset=utf-8");
+			res.status = 200;
+			});
+
+		m_server.Delete("/captions", [this](const httplib::Request& req, httplib::Response& res) {
+			m_captions->ClearStockedCaptions();
+			res.status = 200;
+			});
+
+		m_server.Post("/view/cap", [this](const httplib::Request& req, httplib::Response& res) {
+			std::future<std::vector<char>> futureResult = std::async(std::launch::async,
+				[this, &res]() {
+					// たぶん保存したキャプチャのファイル名がわからない。
+					// ファイルのタイムスタンプで頑張って探す。
+					// CaptureImageをした後にSaveImageは時間差ができるのでダメだった
+					auto saveStartTime = std::chrono::system_clock::now();
+
+					auto saved = m_pApp->SaveImage();
+					if (!saved) {
+						res.status = 500;
+						res.set_content("Failed SaveImage", "text/plain");
+						return std::vector<char>{};
+					}
+
+					// 相対パスの場合、あきらめる
+					WCHAR szFolder[MAX_PATH] = {};
+					if (m_pApp->GetSetting(L"CaptureFolder", szFolder, MAX_PATH) < 1) {
+						res.status = 500;
+						res.set_content("Failed GetSetting; CaptureFolder", "text/plain");
+						return std::vector<char>{};
+					}
+
+					auto bmpFilePath = findRecentBMPFile(std::wstring(szFolder), saveStartTime);
+					if (bmpFilePath.empty()) {
+						res.status = 500;
+						res.set_content("Invalid bmp file path", "text/plain");
+						return std::vector<char>{};
+					}
+
+					auto bmpData = readFile(bmpFilePath);
+					if (bmpData.empty()) {
+						res.status = 500;
+						res.set_content("Failed to read bmp file", "text/plain");
+						return std::vector<char>{};
+					}
+
+					return bmpData;
+				});
+			auto bmpData = futureResult.get();
+			if (bmpData.empty()) return;
+			res.set_content(bmpData.data(), bmpData.size(), "image/bmp");
+			res.status = 200;
+			});
+
+		m_server.Post("/view/panel", [this](const httplib::Request& req, httplib::Response& res) {
+			// トグルしかできないので body は見ない
+			if (!m_pApp->DoCommand(L"Panel")) {
+				res.status = 500;
+				res.set_content("Failed DoCommand: Panel", "text/plain");
+				return;
+			}
+
+			res.status = 200;
+			});
+
+		m_server.Post("/view/reset", [this](const httplib::Request& req, httplib::Response& res) {
+			TVTest::ResetFlag flag = std::stoi(req.body);
+			if (!m_pApp->Reset(flag)) {
+				res.status = 500;
+				res.set_content("Failed Reset", "text/plain");
+				return;
+			}
+
+			res.status = 200;
+			});
+
+		m_server.Get("/status", [this](const httplib::Request& req, httplib::Response& res) {
+			std::wstringstream wss;
+			wss << "{";
+
+			// 録画中
+			{
+				TVTest::RecordStatusInfo info = {};
+				if (m_pApp->GetRecordStatus(&info)) {
+					wss << "\"record_status\":" << info.Status << ",";
+					wss << "\"record_time\":" << info.RecordTime << ",";
+				}
+			}
+
+			// チャンネル
+			{
+				TVTest::ChannelInfo info = {};
+				if (m_pApp->GetCurrentChannelInfo(&info) && info.szChannelName && info.szChannelName[0] != '\0') {
+					wss << "\"channel_name\":\"" << EscapeJsonString(info.szChannelName) << "\",";
+				}
+			}
+
+			// 今の番組
+			{
+				static constexpr int maxEventName = 1000;
+				static constexpr int maxEventText = 10000;
+				static constexpr int maxEventExtText = 10000;
+				WCHAR eventName[maxEventName] = {};
+				WCHAR eventText[maxEventText] = {};
+				WCHAR eventExtText[maxEventExtText] = {};
+				TVTest::ProgramInfo info = {};
+				info.MaxEventName = maxEventName;
+				info.pszEventName = eventName;
+				info.MaxEventText = maxEventText;
+				info.pszEventText = eventText;
+				info.MaxEventExtText = maxEventExtText;
+				info.pszEventExtText = eventExtText;
+				if (m_pApp->GetCurrentProgramInfo(&info) && info.pszEventName && info.pszEventName[0] != '\0') {
+					wss << "\"current_event_id\":" << info.EventID << ",";
+					wss << "\"current_event_service_id\":" << info.ServiceID << ",";
+					wss << "\"current_event_name\":\"" << EscapeJsonString(info.pszEventName) << "\",";
+					wss << "\"current_event_start_time\":\"" << SystemTimeToIsoString(info.StartTime) << "\",";
+					wss << "\"current_event_text\":\"" << EscapeJsonString(info.pszEventText) << "\",";
+					wss << "\"current_event_ext_text\":\"" << EscapeJsonString(info.pszEventExtText) << "\",";
+					wss << "\"current_event_duration\":" << info.Duration << ",";
+				}
+			}
+
+			// 次の番組
+			{
+				static constexpr int maxEventName = 1000;
+				static constexpr int maxEventText = 10000;
+				static constexpr int maxEventExtText = 10000;
+				WCHAR eventName[maxEventName] = {};
+				WCHAR eventText[maxEventText] = {};
+				WCHAR eventExtText[maxEventExtText] = {};
+				TVTest::ProgramInfo info = {};
+				info.MaxEventName = maxEventName;
+				info.pszEventName = eventName;
+				info.MaxEventText = maxEventText;
+				info.pszEventText = eventText;
+				info.MaxEventExtText = maxEventExtText;
+				info.pszEventExtText = eventExtText;
+				if (m_pApp->GetCurrentProgramInfo(&info, true) && info.pszEventName && info.pszEventName[0] != '\0') {
+					wss << "\"next_event_id\":" << info.EventID << ",";
+					wss << "\"next_event_service_id\":" << info.ServiceID << ",";
+					wss << "\"next_event_name\":\"" << EscapeJsonString(info.pszEventName) << "\",";
+					wss << "\"next_event_start_time\":\"" << SystemTimeToIsoString(info.StartTime) << "\",";
+					wss << "\"next_event_text\":\"" << EscapeJsonString(info.pszEventText) << "\",";
+					wss << "\"next_event_ext_text\":\"" << EscapeJsonString(info.pszEventExtText) << "\",";
+					wss << "\"next_event_duration\":" << info.Duration << ",";
+				}
+			}
+
+			// 信号
+			{
+				TVTest::StatusInfo status = {};
+				if (m_pApp->GetStatus(&status)) {
+					wss << "\"signal_level\":" << status.SignalLevel << ",";
+					wss << "\"drop\":" << status.DropPacketCount << ",";
+					wss << "\"error\":" << status.ErrorPacketCount << ",";
+					wss << "\"scramble\":" << status.ScramblePacketCount << ",";
+					wss << "\"bit_rate\":" << status.BitRate << ",";
+				}
+			}
+
+			// TVTPlay
+			HWND hwndFrame = FindWindowW(L"TvtPlay Frame", NULL);
+			if (hwndFrame) {
+				auto elapsed = GetTvtpPosition();
+				if (elapsed >= 0) {
+					wss << "\"elapsed_time\":\"" << convertUtf8ToWstring(MsecToTime(elapsed)) << "\",";
+					wss << "\"elapsed_ms\":" << elapsed << ",";
+				}
+				auto total = GetTvtpDuration();
+				if (total >= 0) {
+					wss << "\"total_time\":\"" << convertUtf8ToWstring(MsecToTime(total)) << "\",";
+					wss << "\"total_ms\":" << total << ",";
+				}
+				auto status = GetTvtpStatus(elapsed, total);
+				wss << "\"play_status\":\"" << status << "\",";
+				auto speed = GetTvtpStretch();
+				wss << "\"speed\":" << speed << ",";
+			}
+
+			// TOT
+			{
+				auto tot = m_captions->GetTOTTime();
+				if (!tot.empty()) {
+					wss << "\"tot\":\"" << convertUtf8ToWstring(tot) << "\",";
+				}
+			}
+
+			wss << "\"volume\":" << m_pApp->GetVolume();
+			wss << "}";
+
+			res.set_content(convertWstringToUtf8(wss.str()), "application/json");
+			res.status = 200;
+			});
+
+		m_server.set_exception_handler([](const auto& req, auto& res, std::exception_ptr ep) {
+			try {
+				std::rethrow_exception(ep);
+			}
+			catch (std::exception& e) {
+				const char* a = e.what();
+				auto w = ConvertToWString(a);
+				res.set_content(convertWstringToUtf8(w), "text/plain");
+			}
+			catch (...) {
+				res.set_content("Unknown Exception", "text/plain");
+			}
+			res.status = 500;
+			});
+
+		m_server.Get("/", [](const auto& req, auto& res) {
+			res.set_file_content("Plugins/HttpRemoconCli.html");
+			});
+		m_server.set_file_extension_and_mimetype_mapping("html", "text/html");
+		m_server.set_default_headers({
+			{ "Access-Control-Allow-Origin", allowOrigin },
+			});
+		m_server.listen(defaultHost, defaultPort);
+		});
 }
 
 std::string MsecToTime(int msec) {
-    int total_sec = msec / 1000;
-    int s = total_sec % 60;
-    int m = (total_sec / 60) % 60;
-    int h = total_sec / 3600;
+	int total_sec = msec / 1000;
+	int s = total_sec % 60;
+	int m = (total_sec / 60) % 60;
+	int h = total_sec / 3600;
 
-    std::ostringstream oss;
-    if (h > 0) oss << h << ":";
-    oss << std::setw(2) << std::setfill('0') << m << ":"
-        << std::setw(2) << std::setfill('0') << s;
-    return oss.str();
+	std::ostringstream oss;
+	if (h > 0) oss << h << ":";
+	oss << std::setw(2) << std::setfill('0') << m << ":"
+		<< std::setw(2) << std::setfill('0') << s;
+	return oss.str();
 }
 
 std::wstring SystemTimeToIsoString(const SYSTEMTIME& st) {
-    wchar_t dateBuffer[std::size("yyyy-MM-dd")];
-    wchar_t timeBuffer[std::size("hh:mm:ss")];
+	wchar_t dateBuffer[std::size("yyyy-MM-dd")];
+	wchar_t timeBuffer[std::size("hh:mm:ss")];
 
-    GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, 0, &st, L"yyyy-MM-dd", std::data(dateBuffer), std::size(dateBuffer), nullptr);
-    GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT, 0, &st, L"HH':'mm':'ss", std::data(timeBuffer), std::size(timeBuffer));
+	int dateResult = GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, 0, &st, L"yyyy-MM-dd", std::data(dateBuffer), std::size(dateBuffer), nullptr);
+	int timeResult = GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT, 0, &st, L"HH':'mm':'ss", std::data(timeBuffer), std::size(timeBuffer));
 
-    std::wostringstream oss;
-    oss << std::wstring(dateBuffer).c_str() << L'T' << std::wstring(timeBuffer).c_str()
-        << L"+09:00";
+	if (dateResult == 0 && timeResult == 0) {
+		return std::wstring();
+	}
 
-    return oss.str();
+	std::wostringstream oss;
+	if (dateResult != 0) {
+		oss << std::wstring(dateBuffer).c_str();
+	}
+	if (dateResult != 0 && timeResult != 0) {
+		oss << L'T';
+	}
+	if (timeResult != 0) {
+		oss << std::wstring(timeBuffer).c_str();
+	}
+	if (dateResult != 0 && timeResult != 0) {
+		oss << L"+09:00";
+	}
+
+	return oss.str();
 }
 
 long GetTvtpPosition() {
-    HWND hwnd = FindWindowW(L"TvtPlay Frame", NULL);
-    if (hwnd == NULL) {
-        return -1;
-    }
+	HWND hwnd = FindWindowW(L"TvtPlay Frame", NULL);
+	if (hwnd == NULL) {
+		return -1;
+	}
 
-    return SendMessage(hwnd, WM_TVTP_GET_POSITION, 0, 0);
+	return SendMessage(hwnd, WM_TVTP_GET_POSITION, 0, 0);
 }
 
 long GetTvtpDuration() {
-    HWND hwnd = FindWindowW(L"TvtPlay Frame", NULL);
-    if (hwnd == NULL) {
-        return -1;
-    }
+	HWND hwnd = FindWindowW(L"TvtPlay Frame", NULL);
+	if (hwnd == NULL) {
+		return -1;
+	}
 
-    return SendMessage(hwnd, WM_TVTP_GET_DURATION, 0, 0);
+	return SendMessage(hwnd, WM_TVTP_GET_DURATION, 0, 0);
 }
 
 std::wstring GetTvtpStatus(long position, long duration) {
-    if (position == -1) {
-        return std::wstring();
-    }
-    if (position >= duration || (position == 0 && duration == 0)) {
-        return L"finished";
-    }
+	if (position == -1) {
+		return std::wstring();
+	}
+	if (position >= duration || (position == 0 && duration == 0)) {
+		return L"finished";
+	}
 
-    HWND hwnd = FindWindowW(L"TvtPlay Frame", NULL);
-    if (hwnd == NULL) {
-        return std::wstring();
-    }
-    auto isPaused = SendMessage(hwnd, WM_TVTP_IS_PAUSED, 0, 0) == 1;
-    return isPaused ? L"paused" : L"playing";
+	HWND hwnd = FindWindowW(L"TvtPlay Frame", NULL);
+	if (hwnd == NULL) {
+		return std::wstring();
+	}
+	auto isPaused = SendMessage(hwnd, WM_TVTP_IS_PAUSED, 0, 0) == 1;
+	return isPaused ? L"paused" : L"playing";
 }
 
 WORD GetTvtpStretch() {
-    HWND hwnd = FindWindowW(L"TvtPlay Frame", NULL);
-    if (hwnd == NULL) {
-        return -1;
-    }
-    return HIWORD(SendMessage(hwnd, WM_TVTP_GET_STRETCH, 0, 0));
+	HWND hwnd = FindWindowW(L"TvtPlay Frame", NULL);
+	if (hwnd == NULL) {
+		return -1;
+	}
+	return HIWORD(SendMessage(hwnd, WM_TVTP_GET_STRETCH, 0, 0));
 }
 
 void PrintChannel(std::ostringstream& output, const WCHAR* szDriver, const TVTest::ChannelInfo& ch) {
-    std::string sDriver = WideCharToUTF8(szDriver);
-    std::string sChannelName = WideCharToUTF8(ch.szChannelName);
+	std::string sDriver = WideCharToUTF8(szDriver);
+	std::string sChannelName = WideCharToUTF8(ch.szChannelName);
 
-    output << sDriver << delimiter
-        << ch.Space << delimiter
-        << ch.Channel << delimiter
-        << ch.ServiceID << ": "
-        << sChannelName << "\n";
+	output << sDriver << delimiter
+		<< ch.Space << delimiter
+		<< ch.Channel << delimiter
+		<< ch.ServiceID << ": "
+		<< sChannelName << "\n";
 }
 
 // チューナー/チャンネルのリストを取得する
 std::string CHttpRemocon::GetTunerList()
 {
-    std::ostringstream tunerList;
-    WCHAR szDriver[MAX_PATH];
+	std::ostringstream tunerList;
+	WCHAR szDriver[MAX_PATH];
 
-    {
-        TVTest::ChannelInfo ch;
-        m_pApp->GetCurrentChannelInfo(&ch);
-        m_pApp->GetDriverName(szDriver, _countof(szDriver));
-        PrintChannel(tunerList, szDriver, ch);
-        tunerList << "\n";
-    }
-    {
-        for (int i = 0; m_pApp->EnumDriver(i, szDriver, _countof(szDriver)) > 0; i++) {
-            TVTest::DriverTuningSpaceList spaces;
-            if (m_pApp->GetDriverTuningSpaceList(szDriver, &spaces)) {
-                for (DWORD j = 0; j < spaces.NumSpaces; j++) {
-                    const TVTest::DriverTuningSpaceInfo& chs = *spaces.SpaceList[j];
-                    for (DWORD k = 0; k < chs.NumChannels; k++) {
-                        const TVTest::ChannelInfo& ch = *chs.ChannelList[k];
-                        if (!(ch.Flags & TVTest::CHANNEL_FLAG_DISABLED)) {
-                            PrintChannel(tunerList, szDriver, ch);
-                        }
-                    }
-                }
+	{
+		TVTest::ChannelInfo ch;
+		m_pApp->GetCurrentChannelInfo(&ch);
+		m_pApp->GetDriverName(szDriver, _countof(szDriver));
+		PrintChannel(tunerList, szDriver, ch);
+		tunerList << "\n";
+	}
+	{
+		for (int i = 0; m_pApp->EnumDriver(i, szDriver, _countof(szDriver)) > 0; i++) {
+			TVTest::DriverTuningSpaceList spaces;
+			if (m_pApp->GetDriverTuningSpaceList(szDriver, &spaces)) {
+				for (DWORD j = 0; j < spaces.NumSpaces; j++) {
+					const TVTest::DriverTuningSpaceInfo& chs = *spaces.SpaceList[j];
+					for (DWORD k = 0; k < chs.NumChannels; k++) {
+						const TVTest::ChannelInfo& ch = *chs.ChannelList[k];
+						if (!(ch.Flags & TVTest::CHANNEL_FLAG_DISABLED)) {
+							PrintChannel(tunerList, szDriver, ch);
+						}
+					}
+				}
 
-                m_pApp->FreeDriverTuningSpaceList(&spaces);
-            }
-        }
-    }
+				m_pApp->FreeDriverTuningSpaceList(&spaces);
+			}
+		}
+	}
 
-    return tunerList.str();
+	return tunerList.str();
 }
 
 
 void CHttpRemocon::SetChannel(const std::string& body, httplib::Response& res) {
-    TVTest::ChannelSelectInfo info = {};
-    info.Size = sizeof(info);
-    info.pszTuner = nullptr;
-    info.Space = -1;
-    info.Channel = -1;
-    info.ServiceID = 0;
+	TVTest::ChannelSelectInfo info = {};
+	info.Size = sizeof(info);
+	info.pszTuner = nullptr;
+	info.Space = -1;
+	info.Channel = -1;
+	info.ServiceID = 0;
 
-    // req.body は "pszTuner,Channel,ServiceID" の形式
-    std::istringstream iss(body);
-    std::string tuner, space, channelStr, serviceIdStr;
-    std::wstring wTuner;
+	// req.body は "pszTuner,Channel,ServiceID" の形式
+	std::istringstream iss(body);
+	std::string tuner, space, channelStr, serviceIdStr;
+	std::wstring wTuner;
 
-    if (std::getline(iss, tuner, delimiter) && std::getline(iss, space, delimiter) && std::getline(iss, channelStr, delimiter) && std::getline(iss, serviceIdStr)) {
-        if (!tuner.empty()) {
-            wTuner = std::wstring(tuner.begin(), tuner.end());
-            info.pszTuner = wTuner.c_str();
-        }
+	if (std::getline(iss, tuner, delimiter) && std::getline(iss, space, delimiter) && std::getline(iss, channelStr, delimiter) && std::getline(iss, serviceIdStr)) {
+		if (!tuner.empty()) {
+			wTuner = std::wstring(tuner.begin(), tuner.end());
+			info.pszTuner = wTuner.c_str();
+		}
 
-        if (!channelStr.empty()) {
-            try {
-                info.Channel = std::stoi(channelStr);
-            }
-            catch (const std::invalid_argument&) {
-                res.status = 400;
-                res.set_content("Invalid Channel value", "text/plain");
-                return;
-            }
-        }
+		if (!channelStr.empty()) {
+			try {
+				info.Channel = std::stoi(channelStr);
+			}
+			catch (const std::invalid_argument&) {
+				res.status = 400;
+				res.set_content("Invalid Channel value", "text/plain");
+				return;
+			}
+		}
 
-        if (!space.empty()) {
-            try {
-                info.Space = std::stoi(space);
-            }
-            catch (const std::invalid_argument&) {
-                res.status = 400;
-                res.set_content("Invalid Space value", "text/plain");
-                return;
-            }
-        }
+		if (!space.empty()) {
+			try {
+				info.Space = std::stoi(space);
+			}
+			catch (const std::invalid_argument&) {
+				res.status = 400;
+				res.set_content("Invalid Space value", "text/plain");
+				return;
+			}
+		}
 
-        if (!serviceIdStr.empty()) {
-            try {
-                info.ServiceID = std::stoi(serviceIdStr);
-            }
-            catch (const std::invalid_argument&) {
-                res.status = 400;
-                res.set_content("Invalid ServiceID value", "text/plain");
-                return;
-            }
-        }
+		if (!serviceIdStr.empty()) {
+			try {
+				info.ServiceID = std::stoi(serviceIdStr);
+			}
+			catch (const std::invalid_argument&) {
+				res.status = 400;
+				res.set_content("Invalid ServiceID value", "text/plain");
+				return;
+			}
+		}
 
-        // チャンネル選択
-        if (!m_pApp->SelectChannel(&info)) {
-            res.status = 500;
-            res.set_content("Failed SelectChannel", "text/plain");
-            return;
-        }
+		// チャンネル選択
+		if (!m_pApp->SelectChannel(&info)) {
+			res.status = 500;
+			res.set_content("Failed SelectChannel", "text/plain");
+			return;
+		}
 
-        res.status = 200;
-    }
-    else {
-        // パースエラー
-        res.status = 400;
-        res.set_content("Invalid request format", "text/plain");
-    }
+		res.status = 200;
+	}
+	else {
+		// パースエラー
+		res.status = 400;
+		res.set_content("Invalid request format", "text/plain");
+	}
 }
 
 
 void CHttpRemocon::StopHttpServer()
 {
-    if (m_server.is_running()) {
-        m_server.stop();
-    }
-    if (m_serverThread.joinable()) {
-        m_serverThread.join();  // サーバスレッドの終了を待機
-    }
+	if (m_server.is_running()) {
+		m_server.stop();
+	}
+	if (m_serverThread.joinable()) {
+		m_serverThread.join();  // サーバスレッドの終了を待機
+	}
 }
 
 // イベントコールバック関数
 // 何かイベントが起きると呼ばれる
 LRESULT CALLBACK CHttpRemocon::EventCallback(UINT Event, LPARAM lParam1, LPARAM lParam2, void* pClientData)
 {
-    CHttpRemocon* pThis = static_cast<CHttpRemocon*>(pClientData);
+	CHttpRemocon* pThis = static_cast<CHttpRemocon*>(pClientData);
 
-    switch (Event) {
-    case TVTest::EVENT_PLUGINENABLE:
-        // プラグインの有効状態が変化した
-        pThis->m_fEnabled = lParam1 != 0;
-        if (pThis->m_fEnabled) {
-            pThis->StartHttpServer();
+	switch (Event) {
+	case TVTest::EVENT_PLUGINENABLE:
+		// プラグインの有効状態が変化した
+		pThis->m_fEnabled = lParam1 != 0;
+		if (pThis->m_fEnabled) {
+			pThis->StartHttpServer();
 
-            // チャンネル名を追加して初期化
-            TVTest::ChannelInfo info = {};
-            std::wstring channel;
-            if (pThis->m_pApp->GetCurrentChannelInfo(&info) && info.szChannelName && info.szChannelName[0] != '\0') {
-                channel = info.szChannelName;
-                pThis->m_captions = std::make_unique<Captions>(L"-- " + channel + L" --\n\n");
-            }
-            pThis->m_captions = std::make_unique<Captions>();
-            pThis->m_pApp->SetStreamCallback(0, pThis->m_captions->StreamCallback, pThis->m_captions.get());
-        }
-        else {
-            pThis->StopHttpServer();
-            pThis->m_pApp->SetStreamCallback(TVTest::STREAM_CALLBACK_REMOVE, pThis->m_captions->StreamCallback, nullptr);
-            pThis->m_captions.reset();
-        }
-        return TRUE;
+			// チャンネル名を追加して初期化
+			TVTest::ChannelInfo info = {};
+			std::wstring channel;
+			if (pThis->m_pApp->GetCurrentChannelInfo(&info) && info.szChannelName && info.szChannelName[0] != '\0') {
+				channel = info.szChannelName;
+				pThis->m_captions = std::make_unique<Captions>(L"-- " + channel + L" --\n\n");
+			}
+			pThis->m_captions = std::make_unique<Captions>();
+			pThis->m_pApp->SetStreamCallback(0, pThis->m_captions->StreamCallback, pThis->m_captions.get());
+		}
+		else {
+			pThis->StopHttpServer();
+			pThis->m_pApp->SetStreamCallback(TVTest::STREAM_CALLBACK_REMOVE, pThis->m_captions->StreamCallback, nullptr);
+			pThis->m_captions.reset();
+		}
+		return TRUE;
 
-    case TVTest::EVENT_CHANNELCHANGE:
-        pThis->m_pApp->SetStreamCallback(TVTest::STREAM_CALLBACK_REMOVE, pThis->m_captions->StreamCallback, nullptr);
-        std::wstring prevCaptions = pThis->m_captions->GetStockedCaptions();
-        
-        // チャンネル名を追加して初期化
-        TVTest::ChannelInfo info = {};
-        std::wstring channel;
-        if (pThis->m_pApp->GetCurrentChannelInfo(&info) && info.szChannelName && info.szChannelName[0] != '\0') {
-            channel = info.szChannelName;
-        }
-        pThis->m_captions = std::make_unique<Captions>(prevCaptions + L"\n-- " + channel + L" --\n");
-        pThis->m_pApp->SetStreamCallback(0, pThis->m_captions->StreamCallback, pThis->m_captions.get());
-    }
+	case TVTest::EVENT_CHANNELCHANGE:
+		pThis->m_pApp->SetStreamCallback(TVTest::STREAM_CALLBACK_REMOVE, pThis->m_captions->StreamCallback, nullptr);
+		std::wstring prevCaptions = pThis->m_captions->GetStockedCaptions();
 
-    return 0;
+		// チャンネル名を追加して初期化
+		TVTest::ChannelInfo info = {};
+		std::wstring channel;
+		if (pThis->m_pApp->GetCurrentChannelInfo(&info) && info.szChannelName && info.szChannelName[0] != '\0') {
+			channel = info.szChannelName;
+		}
+		pThis->m_captions = std::make_unique<Captions>(prevCaptions + L"\n-- " + channel + L" --\n");
+		pThis->m_pApp->SetStreamCallback(0, pThis->m_captions->StreamCallback, pThis->m_captions.get());
+	}
+
+	return 0;
 }
 
 
 CHttpRemocon* CHttpRemocon::GetThis(HWND hwnd)
 {
-    return reinterpret_cast<CHttpRemocon*>(::GetWindowLongPtr(hwnd, GWLP_USERDATA));
+	return reinterpret_cast<CHttpRemocon*>(::GetWindowLongPtr(hwnd, GWLP_USERDATA));
 }
 
 
 TVTest::CTVTestPlugin* CreatePluginClass()
 {
-    return new CHttpRemocon;
+	return new CHttpRemocon;
 }
 
 // UTF-8 から UTF-16 への変換
 std::wstring convertUtf8ToWstring(const std::string& utf8) {
-    int wideCharSize = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
-    if (wideCharSize == 0) {
-        throw std::runtime_error("Failed to convert UTF-8 to UTF-16");
-    }
+	int wideCharSize = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
+	if (wideCharSize == 0) {
+		throw std::runtime_error("Failed to convert UTF-8 to UTF-16");
+	}
 
-    std::wstring wstr(wideCharSize, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, &wstr[0], wideCharSize);
-    wstr.resize(wideCharSize - 1);  // 末尾のヌル文字（'\0'）を除去
-    return wstr;
+	std::wstring wstr(wideCharSize, L'\0');
+	MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, &wstr[0], wideCharSize);
+	wstr.resize(wideCharSize - 1);  // 末尾のヌル文字（'\0'）を除去
+	return wstr;
 }
 
 // UTF-16 から UTF-8 への変換
 std::string convertWstringToUtf8(const std::wstring& wstr) {
-    int utf8Size = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (utf8Size == 0) {
-        throw std::runtime_error("Failed to convert UTF-16 to UTF-8");
-    }
+	int utf8Size = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
+	if (utf8Size == 0) {
+		throw std::runtime_error("Failed to convert UTF-16 to UTF-8");
+	}
 
-    std::string utf8(utf8Size, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &utf8[0], utf8Size, nullptr, nullptr);
-    utf8.resize(utf8Size - 1);  // 末尾のヌル文字（'\0'）を除去
-    return utf8;
+	std::string utf8(utf8Size, '\0');
+	WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &utf8[0], utf8Size, nullptr, nullptr);
+	utf8.resize(utf8Size - 1);  // 末尾のヌル文字（'\0'）を除去
+	return utf8;
 }
 
 // ファイルのドラッグアンドドロップをシミュレートする関数
 void SimulateDropFiles(HWND hwndTarget, const std::wstring& filePath)
 {
-    // ドロップするファイルのリストを準備
-    DROPFILES dropFiles = { 0 };
-    dropFiles.pFiles = sizeof(DROPFILES);  // ファイルリストのオフセット
-    dropFiles.fNC = TRUE;                  // 非クライアントエリアのフラグ
-    dropFiles.pt.x = 0;                    // ドロップ位置（相対座標）
-    dropFiles.pt.y = 0;
-    dropFiles.fWide = TRUE;
+	// ドロップするファイルのリストを準備
+	DROPFILES dropFiles = { 0 };
+	dropFiles.pFiles = sizeof(DROPFILES);  // ファイルリストのオフセット
+	dropFiles.fNC = TRUE;                  // 非クライアントエリアのフラグ
+	dropFiles.pt.x = 0;                    // ドロップ位置（相対座標）
+	dropFiles.pt.y = 0;
+	dropFiles.fWide = TRUE;
 
-    // ファイルパスを二重終端で準備（必要な形式）
-    size_t filePathSize = (filePath.length() + 1) * sizeof(wchar_t);
-    size_t totalSize = sizeof(DROPFILES) + filePathSize;
+	// ファイルパスを二重終端で準備（必要な形式）
+	size_t filePathSize = (filePath.length() + 1) * sizeof(wchar_t);
+	size_t totalSize = sizeof(DROPFILES) + filePathSize;
 
-    // メモリを確保
-    HGLOBAL hGlobal = GlobalAlloc(GHND, totalSize);
-    if (hGlobal) {
-        // メモリをロックしてアクセス可能にする
-        BYTE* pData = (BYTE*)GlobalLock(hGlobal);
-        if (pData) {
-            // DROPFILES構造体をコピー
-            memcpy(pData, &dropFiles, sizeof(DROPFILES));
+	// メモリを確保
+	HGLOBAL hGlobal = GlobalAlloc(GHND, totalSize);
+	if (hGlobal) {
+		// メモリをロックしてアクセス可能にする
+		BYTE* pData = (BYTE*)GlobalLock(hGlobal);
+		if (pData) {
+			// DROPFILES構造体をコピー
+			memcpy(pData, &dropFiles, sizeof(DROPFILES));
 
-            // ファイルパスをコピー（DROPFILES構造体の直後に）
-            memcpy(pData + sizeof(DROPFILES), filePath.c_str(), filePathSize);
+			// ファイルパスをコピー（DROPFILES構造体の直後に）
+			memcpy(pData + sizeof(DROPFILES), filePath.c_str(), filePathSize);
 
-            // メモリをアンロック
-            GlobalUnlock(hGlobal);
+			// メモリをアンロック
+			GlobalUnlock(hGlobal);
 
-            // ターゲットウィンドウにWM_DROPFILESメッセージを送信
-            PostMessage(hwndTarget, WM_DROPFILES, (WPARAM)hGlobal, 0);
-        }
-        else {
-            // メモリのロックに失敗した場合
-            GlobalFree(hGlobal);
-        }
-    }
+			// ターゲットウィンドウにWM_DROPFILESメッセージを送信
+			PostMessage(hwndTarget, WM_DROPFILES, (WPARAM)hGlobal, 0);
+		}
+		else {
+			// メモリのロックに失敗した場合
+			GlobalFree(hGlobal);
+		}
+	}
 }
 
 std::wstring ConvertToWString(const char* str) {
-    // 文字列の長さを取得します。
-    int len = MultiByteToWideChar(CP_ACP, 0, str, -1, nullptr, 0);
-    if (len == 0) {
-        // エラー処理（必要に応じて追加）
-        return L"";
-    }
+	// 文字列の長さを取得します。
+	int len = MultiByteToWideChar(CP_ACP, 0, str, -1, nullptr, 0);
+	if (len == 0) {
+		// エラー処理（必要に応じて追加）
+		return L"";
+	}
 
-    // wchar_tバッファを確保します。
-    std::wstring wstr(len - 1, L'\0'); // 終端文字分を引く
-    MultiByteToWideChar(CP_ACP, 0, str, -1, &wstr[0], len);
+	// wchar_tバッファを確保します。
+	std::wstring wstr(len - 1, L'\0'); // 終端文字分を引く
+	MultiByteToWideChar(CP_ACP, 0, str, -1, &wstr[0], len);
 
-    return wstr;
+	return wstr;
 }
 
 std::string WideCharToUTF8(const WCHAR* pWideChar)
 {
-    int len = WideCharToMultiByte(CP_UTF8, 0, pWideChar, -1, nullptr, 0, nullptr, nullptr);
-    if (len == 0) {
-        return "";
-    }
-    std::string utf8Str(len - 1, '\0'); // 終端文字分を引く
-    WideCharToMultiByte(CP_UTF8, 0, pWideChar, -1, &utf8Str[0], len, nullptr, nullptr);
-    return utf8Str;
+	int len = WideCharToMultiByte(CP_UTF8, 0, pWideChar, -1, nullptr, 0, nullptr, nullptr);
+	if (len == 0) {
+		return "";
+	}
+	std::string utf8Str(len - 1, '\0'); // 終端文字分を引く
+	WideCharToMultiByte(CP_UTF8, 0, pWideChar, -1, &utf8Str[0], len, nullptr, nullptr);
+	return utf8Str;
 }
 
 int ParseTimeToMilliseconds(const std::string& input) {
-    int hours = 0, minutes = 0, seconds = 0;
-    char _;
+	int hours = 0, minutes = 0, seconds = 0;
+	char _;
 
-    std::istringstream iss(input);
-    auto count = std::count(input.begin(), input.end(), ':');
-    if (count == 0) {
-        // 秒のみの場合 (例: "1")
-        iss >> seconds;
-    }
-    else if (count == 1) {
-        // 分:秒 の場合 (例: "0:10")
-        iss >> minutes >> _ >> seconds;
-    }
-    else if (count == 2) {
-        // 時:分:秒 の場合 (例: "1:00:00")
-        iss >> hours >> _ >> minutes >> _ >> seconds;
-    }
-    else {
-        throw std::invalid_argument("Invalid time format");
-    }
+	std::istringstream iss(input);
+	auto count = std::count(input.begin(), input.end(), ':');
+	if (count == 0) {
+		// 秒のみの場合 (例: "1")
+		iss >> seconds;
+	}
+	else if (count == 1) {
+		// 分:秒 の場合 (例: "0:10")
+		iss >> minutes >> _ >> seconds;
+	}
+	else if (count == 2) {
+		// 時:分:秒 の場合 (例: "1:00:00")
+		iss >> hours >> _ >> minutes >> _ >> seconds;
+	}
+	else {
+		throw std::invalid_argument("Invalid time format");
+	}
 
-    return (hours * 3600 + minutes * 60 + seconds) * 1000;
+	return (hours * 3600 + minutes * 60 + seconds) * 1000;
 }
 
 #ifdef _DEBUG
 static void debugPrintFileTime(const wchar_t* label, const FILETIME& fileTime) {
-    SYSTEMTIME systemTime;
-    FileTimeToSystemTime(&fileTime, &systemTime);
+	SYSTEMTIME systemTime;
+	FileTimeToSystemTime(&fileTime, &systemTime);
 
-    std::wstringstream ss;
-    ss << label << L": "
-        << systemTime.wYear << L"-"
-        << std::setfill(L'0') << std::setw(2) << systemTime.wMonth << L"-"
-        << std::setw(2) << systemTime.wDay << L" "
-        << std::setw(2) << systemTime.wHour << L":"
-        << std::setw(2) << systemTime.wMinute << L":"
-        << std::setw(2) << systemTime.wSecond << L"."
-        << std::setw(3) << systemTime.wMilliseconds << L"\n";
+	std::wstringstream ss;
+	ss << label << L": "
+		<< systemTime.wYear << L"-"
+		<< std::setfill(L'0') << std::setw(2) << systemTime.wMonth << L"-"
+		<< std::setw(2) << systemTime.wDay << L" "
+		<< std::setw(2) << systemTime.wHour << L":"
+		<< std::setw(2) << systemTime.wMinute << L":"
+		<< std::setw(2) << systemTime.wSecond << L"."
+		<< std::setw(3) << systemTime.wMilliseconds << L"\n";
 
-    OutputDebugStringW(ss.str().c_str());
+	OutputDebugStringW(ss.str().c_str());
 }
 #endif
 
 // 指定された時間範囲内のBMPファイルを探す関数
 std::filesystem::path findRecentBMPFile(const std::wstring& directory, const std::chrono::system_clock::time_point& lastSaveTime) {
-    // lastSaveTime を FILETIME に変換
-    FILETIME lastSaveFileTime;
-    ULARGE_INTEGER ull;
-    ull.QuadPart = std::chrono::duration_cast<std::chrono::nanoseconds>(lastSaveTime.time_since_epoch()).count() / 100; // 100ナノ秒に変換
-    ull.QuadPart += 116444736000000000ULL; // UnixエポックからWindowsエポックのオフセットを加算
-    lastSaveFileTime.dwLowDateTime = static_cast<DWORD>(ull.LowPart);
-    lastSaveFileTime.dwHighDateTime = static_cast<DWORD>(ull.HighPart);
+	// lastSaveTime を FILETIME に変換
+	FILETIME lastSaveFileTime;
+	ULARGE_INTEGER ull;
+	ull.QuadPart = std::chrono::duration_cast<std::chrono::nanoseconds>(lastSaveTime.time_since_epoch()).count() / 100; // 100ナノ秒に変換
+	ull.QuadPart += 116444736000000000ULL; // UnixエポックからWindowsエポックのオフセットを加算
+	lastSaveFileTime.dwLowDateTime = static_cast<DWORD>(ull.LowPart);
+	lastSaveFileTime.dwHighDateTime = static_cast<DWORD>(ull.HighPart);
 
 #ifdef _DEBUG
-    debugPrintFileTime(L"lastSaveFileTime", lastSaveFileTime);
+	debugPrintFileTime(L"lastSaveFileTime", lastSaveFileTime);
 #endif
 
-    // ディレクトリ内のファイルを検索
-    WIN32_FIND_DATAW findData;
-    HANDLE hFind = FindFirstFileW((directory + L"\\*.bmp").c_str(), &findData);
+	// ディレクトリ内のファイルを検索
+	WIN32_FIND_DATAW findData;
+	HANDLE hFind = FindFirstFileW((directory + L"\\*.bmp").c_str(), &findData);
 
-    if (hFind == INVALID_HANDLE_VALUE) {
-        return {};
-    }
+	if (hFind == INVALID_HANDLE_VALUE) {
+		return {};
+	}
 
-    std::filesystem::path recentBMPFile;
-    do {
-        // 通常ファイルであることを確認
-        if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+	std::filesystem::path recentBMPFile;
+	do {
+		// 通常ファイルであることを確認
+		if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
 #ifdef _DEBUG
-            debugPrintFileTime(findData.cFileName, findData.ftLastWriteTime);
+			debugPrintFileTime(findData.cFileName, findData.ftLastWriteTime);
 #endif
-            if (CompareFileTime(&findData.ftLastWriteTime, &lastSaveFileTime) >= 0) {
-                recentBMPFile = std::filesystem::path(directory) / findData.cFileName;
-                break;
-            }
-        }
-    } while (FindNextFileW(hFind, &findData) != 0);
+			if (CompareFileTime(&findData.ftLastWriteTime, &lastSaveFileTime) >= 0) {
+				recentBMPFile = std::filesystem::path(directory) / findData.cFileName;
+				break;
+			}
+		}
+	} while (FindNextFileW(hFind, &findData) != 0);
 
-    FindClose(hFind);
-    return recentBMPFile;
+	FindClose(hFind);
+	return recentBMPFile;
 }
 
 
 // https://coniferproductions.com/posts/2022/10/25/reading-binary-files-cpp/
 std::vector<char> readFile(const std::filesystem::path& filePath) {
-    auto lengthUintmax = std::filesystem::file_size(filePath);
-    if (lengthUintmax == 0) return std::vector<char>{};
-    if (lengthUintmax > std::numeric_limits<size_t>::max()) throw std::overflow_error("Too large file");
+	auto lengthUintmax = std::filesystem::file_size(filePath);
+	if (lengthUintmax == 0) return std::vector<char>{};
+	if (lengthUintmax > std::numeric_limits<size_t>::max()) throw std::overflow_error("Too large file");
 
-    size_t length = static_cast<size_t>(lengthUintmax);
-    std::vector<char> buffer(length);
-    std::ifstream inputFile(filePath, std::ios::binary);
-    if (!inputFile) throw std::runtime_error("Failed to open file");
-    if (!inputFile.read(buffer.data(), length)) throw std::runtime_error("Failed to read file");
+	size_t length = static_cast<size_t>(lengthUintmax);
+	std::vector<char> buffer(length);
+	std::ifstream inputFile(filePath, std::ios::binary);
+	if (!inputFile) throw std::runtime_error("Failed to open file");
+	if (!inputFile.read(buffer.data(), length)) throw std::runtime_error("Failed to read file");
 
-    return buffer;
+	return buffer;
 }
 
 std::wstring EscapeJsonString(const std::wstring& input)
 {
-    std::wstring output;
-    for (wchar_t ch : input)
-    {
-        switch (ch)
-        {
-        case L'"':  output += L"\\\""; break;
-        case L'\\': output += L"\\\\"; break;
-        case L'/':  output += L"\\/";  break;
-        case L'\b': output += L"\\b";  break;
-        case L'\f': output += L"\\f";  break;
-        case L'\n': output += L"\\n";  break;
-        case L'\r': output += L"\\r";  break;
-        case L'\t': output += L"\\t";  break;
-        default:
-            if (ch < 0x20) {
-                wchar_t buf[7];
-                swprintf(buf, 7, L"\\u%04x", ch);
-                output += buf;
-            }
-            else {
-                output += ch;
-            }
-            break;
-        }
-    }
-    return output;
+	std::wstring output;
+	for (wchar_t ch : input)
+	{
+		switch (ch)
+		{
+		case L'"':  output += L"\\\""; break;
+		case L'\\': output += L"\\\\"; break;
+		case L'/':  output += L"\\/";  break;
+		case L'\b': output += L"\\b";  break;
+		case L'\f': output += L"\\f";  break;
+		case L'\n': output += L"\\n";  break;
+		case L'\r': output += L"\\r";  break;
+		case L'\t': output += L"\\t";  break;
+		default:
+			if (ch < 0x20) {
+				wchar_t buf[7];
+				swprintf(buf, 7, L"\\u%04x", ch);
+				output += buf;
+			}
+			else {
+				output += ch;
+			}
+			break;
+		}
+	}
+	return output;
 }
