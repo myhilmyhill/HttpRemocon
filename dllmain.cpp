@@ -49,6 +49,7 @@ static int ParseTimeToMilliseconds(const std::string& input);
 std::filesystem::path findRecentBMPFile(const std::wstring& directory, const std::chrono::system_clock::time_point& lastSaveTime);
 std::vector<char> readFile(const std::filesystem::path& filePath);
 std::wstring EscapeJsonString(const std::wstring& input);
+std::wstring GetAribGenre(TVTest::EpgEventContentInfo& content);
 
 
 static std::wstring& trim(std::wstring& s) {
@@ -472,6 +473,16 @@ void CHttpRemocon::StartHttpServer()
 			res.status = 200;
 			});
 
+		m_server.Post("/view/rebuild", [this](const httplib::Request& req, httplib::Response& res) {
+			if (!m_pApp->DoCommand(L"RebuildViewer")) {
+				res.status = 500;
+				res.set_content("Failed Rebuild", "text/plain");
+				return;
+			}
+
+			res.status = 200;
+			});
+
 		m_server.Get("/status", [this](const httplib::Request& req, httplib::Response& res) {
 			std::wstringstream wss;
 			wss << "{";
@@ -516,6 +527,28 @@ void CHttpRemocon::StartHttpServer()
 					wss << "\"current_event_text\":\"" << EscapeJsonString(info.pszEventText) << "\",";
 					wss << "\"current_event_ext_text\":\"" << EscapeJsonString(info.pszEventExtText) << "\",";
 					wss << "\"current_event_duration\":" << info.Duration << ",";
+					TVTest::ChannelInfo ChInfo;
+					if (m_pApp->GetCurrentChannelInfo(&ChInfo)) {
+						TVTest::EpgEventQueryInfo QueryInfo;
+						QueryInfo.NetworkID = ChInfo.NetworkID;
+						QueryInfo.TransportStreamID = ChInfo.TransportStreamID;
+						QueryInfo.ServiceID = ChInfo.ServiceID;
+						QueryInfo.Type = TVTest::EPG_EVENT_QUERY_TIME;
+						QueryInfo.Flags = TVTest::EPG_EVENT_QUERY_FLAG_NONE;
+						GetSystemTimeAsFileTime(&QueryInfo.Time);
+						TVTest::EpgEventInfo* pEvent = m_pApp->GetEpgEventInfo(&QueryInfo);
+						if (pEvent != nullptr) {
+							wss << "\"current_content_nibble_level1\":" << pEvent->ContentList->ContentNibbleLevel1<< ",";
+							wss << "\"current_content_nibble_level2\":" << pEvent->ContentList->ContentNibbleLevel2 << ",";
+							wss << "\"current_content_nibble\":\"" << GetAribGenre(*pEvent->ContentList) << "\",";
+							m_pApp->FreeEpgEventInfo(pEvent);
+						}
+						else {
+							wss << "\"current_content_nibble_level1\":null,";
+							wss << "\"current_content_nibble_level2\":null,";
+							wss << "\"current_content_nibble\":null,";
+						}
+					}
 				}
 			}
 
@@ -1105,4 +1138,176 @@ std::wstring EscapeJsonString(const std::wstring& input)
 		}
 	}
 	return output;
+}
+
+std::wstring GetAribGenre(TVTest::EpgEventContentInfo& content)
+{
+	switch (content.ContentNibbleLevel1)
+	{
+	case 0x0: // ニュース／報道
+		switch (content.ContentNibbleLevel2)
+		{
+		case 0x0: return L"ニュース／報道 - 定時・総合";
+		case 0x1: return L"ニュース／報道 - 天気";
+		case 0x2: return L"ニュース／報道 - 特集・ドキュメント";
+		case 0x3: return L"ニュース／報道 - 政治・国会";
+		case 0x4: return L"ニュース／報道 - 経済・市況";
+		case 0x5: return L"ニュース／報道 - 海外・国際";
+		case 0x6: return L"ニュース／報道 - 解説";
+		case 0x7: return L"ニュース／報道 - 討論・会談";
+		case 0x8: return L"ニュース／報道 - 報道特番";
+		case 0x9: return L"ニュース／報道 - ローカル・地域";
+		case 0xA: return L"ニュース／報道 - 交通";
+		default: return L"ニュース／報道 - その他";
+		}
+
+	case 0x1: // スポーツ
+		switch (content.ContentNibbleLevel2)
+		{
+		case 0x0: return L"スポーツ - スポーツニュース";
+		case 0x1: return L"スポーツ - 野球";
+		case 0x2: return L"スポーツ - サッカー";
+		case 0x3: return L"スポーツ - ゴルフ";
+		case 0x4: return L"スポーツ - その他の球技";
+		case 0x5: return L"スポーツ - 相撲・格闘技";
+		case 0x6: return L"スポーツ - 国際大会";
+		case 0x7: return L"スポーツ - 陸上・マラソン";
+		case 0x8: return L"スポーツ - モータースポーツ";
+		case 0x9: return L"スポーツ - マリン・ウィンタースポーツ";
+		case 0xA: return L"スポーツ - 競馬・公営競技";
+		default: return L"スポーツ - その他";
+		}
+
+	case 0x2: // 情報／ワイドショー
+		switch (content.ContentNibbleLevel2)
+		{
+		case 0x0: return L"情報／ワイドショー - 芸能・ワイドショー";
+		case 0x1: return L"情報／ワイドショー - ファッション";
+		case 0x2: return L"情報／ワイドショー - 暮らし・住まい";
+		case 0x3: return L"情報／ワイドショー - 健康・医療";
+		case 0x4: return L"情報／ワイドショー - ショッピング・通販";
+		case 0x5: return L"情報／ワイドショー - グルメ・料理";
+		case 0x6: return L"情報／ワイドショー - イベント";
+		case 0x7: return L"情報／ワイドショー - 番組紹介・お知らせ";
+		default: return L"情報／ワイドショー - その他";
+		}
+
+	case 0x3: // ドラマ
+		switch (content.ContentNibbleLevel2)
+		{
+		case 0x0: return L"ドラマ - 国内ドラマ";
+		case 0x1: return L"ドラマ - 海外ドラマ";
+		case 0x2: return L"ドラマ - 時代劇";
+		default: return L"ドラマ - その他";
+		}
+
+	case 0x4: // 音楽
+		switch (content.ContentNibbleLevel2)
+		{
+		case 0x0: return L"音楽 - 国内ロック・ポップス";
+		case 0x1: return L"音楽 - 海外ロック・ポップス";
+		case 0x2: return L"音楽 - クラシック・オペラ";
+		case 0x3: return L"音楽 - ジャズ・フュージョン";
+		case 0x4: return L"音楽 - 歌謡曲・演歌";
+		case 0x5: return L"音楽 - ライブ・コンサート";
+		case 0x6: return L"音楽 - ランキング・リクエスト";
+		case 0x7: return L"音楽 - カラオケ・のど自慢";
+		case 0x8: return L"音楽 - 民謡・邦楽";
+		case 0x9: return L"音楽 - 童謡・キッズ";
+		case 0xA: return L"音楽 - 民族音楽・ワールドミュージック";
+		default: return L"音楽 - その他";
+		}
+
+	case 0x5: // バラエティ
+		switch (content.ContentNibbleLevel2)
+		{
+		case 0x0: return L"バラエティ - クイズ";
+		case 0x1: return L"バラエティ - ゲーム";
+		case 0x2: return L"バラエティ - トークバラエティ";
+		case 0x3: return L"バラエティ - お笑い・コメディ";
+		case 0x4: return L"バラエティ - 音楽バラエティ";
+		case 0x5: return L"バラエティ - 旅バラエティ";
+		case 0x6: return L"バラエティ - 料理バラエティ";
+		default: return L"バラエティ - その他";
+		}
+
+	case 0x6: // 映画
+		switch (content.ContentNibbleLevel2)
+		{
+		case 0x0: return L"映画 - 洋画";
+		case 0x1: return L"映画 - 邦画";
+		case 0x2: return L"映画 - アニメ";
+		default: return L"映画 - その他";
+		}
+
+	case 0x7: // アニメ／特撮
+		switch (content.ContentNibbleLevel2)
+		{
+		case 0x0: return L"アニメ／特撮 - 国内アニメ";
+		case 0x1: return L"アニメ／特撮 - 海外アニメ";
+		case 0x2: return L"アニメ／特撮 - 特撮";
+		default: return L"アニメ／特撮 - その他";
+		}
+
+	case 0x8: // ドキュメンタリー／教養
+		switch (content.ContentNibbleLevel2)
+		{
+		case 0x0: return L"ドキュメンタリー／教養 - 社会・時事";
+		case 0x1: return L"ドキュメンタリー／教養 - 歴史・紀行";
+		case 0x2: return L"ドキュメンタリー／教養 - 自然・動物・環境";
+		case 0x3: return L"ドキュメンタリー／教養 - 宇宙・科学・医学";
+		case 0x4: return L"ドキュメンタリー／教養 - カルチャー・伝統文化";
+		case 0x5: return L"ドキュメンタリー／教養 - 文学・文芸";
+		case 0x6: return L"ドキュメンタリー／教養 - スポーツ";
+		case 0x7: return L"ドキュメンタリー／教養 - ドキュメンタリー全般";
+		case 0x8: return L"ドキュメンタリー／教養 - インタビュー・討論";
+		default: return L"ドキュメンタリー／教養 - その他";
+		}
+
+	case 0x9: // 劇場／公演
+		switch (content.ContentNibbleLevel2)
+		{
+		case 0x0: return L"劇場／公演 - 現代劇・新劇";
+		case 0x1: return L"劇場／公演 - ミュージカル";
+		case 0x2: return L"劇場／公演 - ダンス・バレエ";
+		case 0x3: return L"劇場／公演 - 落語・演芸";
+		case 0x4: return L"劇場／公演 - 歌舞伎・古典";
+		default: return L"劇場／公演 - その他";
+		}
+
+	case 0xA: // 趣味／教育
+		switch (content.ContentNibbleLevel2)
+		{
+		case 0x0: return L"趣味／教育 - 旅・釣り・アウトドア";
+		case 0x1: return L"趣味／教育 - 園芸・ペット・手芸";
+		case 0x2: return L"趣味／教育 - 音楽・美術・工芸";
+		case 0x3: return L"趣味／教育 - 囲碁・将棋";
+		case 0x4: return L"趣味／教育 - 麻雀・パチンコ";
+		case 0x5: return L"趣味／教育 - 車・オートバイ";
+		case 0x6: return L"趣味／教育 - コンピュータ・TVゲーム";
+		case 0x7: return L"趣味／教育 - 会話・語学";
+		case 0x8: return L"趣味／教育 - 幼児・小学生";
+		case 0x9: return L"趣味／教育 - 中学生・高校生";
+		case 0xA: return L"趣味／教育 - 大学生・受験";
+		case 0xB: return L"趣味／教育 - 生涯教育・資格";
+		case 0xC: return L"趣味／教育 - 教育問題";
+		default: return L"趣味／教育 - その他";
+		}
+
+	case 0xB: // 福祉
+		switch (content.ContentNibbleLevel2)
+		{
+		case 0x0: return L"福祉 - 高齢者";
+		case 0x1: return L"福祉 - 障害者";
+		case 0x2: return L"福祉 - 社会福祉";
+		case 0x3: return L"福祉 - ボランティア";
+		case 0x4: return L"福祉 - 手話";
+		case 0x5: return L"福祉 - 文字（字幕）";
+		case 0x6: return L"福祉 - 音声解説";
+		default: return L"福祉 - その他";
+		}
+
+	default:
+		return L"その他";
+	}
 }

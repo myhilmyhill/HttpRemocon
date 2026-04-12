@@ -2,7 +2,8 @@
 <html lang="ja">
 
 <meta charset="utf-8">
-<link rel="icon" href="data:image/bmp;base64,Qk1WAAAAAAAAAD4AAAAoAAAACAAAAAYAAAABAAEAAAAAABgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP///wD/AAAA+wAAANUAAADVAAAAjwAAAP8AAAA=">
+<link rel="icon"
+  href="data:image/bmp;base64,Qk1WAAAAAAAAAD4AAAAoAAAACAAAAAYAAAABAAEAAAAAABgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP///wD/AAAA+wAAANUAAADVAAAAjwAAAP8AAAA=">
 <title>HttpRemocon</title>
 <style>
   html {
@@ -58,6 +59,10 @@
 
   #channels-dialog {
     margin-left: 0;
+
+    .channel-name {
+      display: block
+    }
   }
 </style>
 <script>
@@ -75,7 +80,7 @@
   }
   class HttpRemocon {
     static host = window.location.origin
-    static async getRoot() { return request(`${this.host}/`) }
+    static async getRoot() { return fetch(`${this.host}/`).then(r => r.ok) }
     static async closeTuner() { return request(`${this.host}/`, 'POST', 'close') }
     static async sleep() { return request(`${this.host}/`, 'POST', 'sleep') }
     static async setPlay(filePath) { return request(`${this.host}/play`, 'POST', filePath) }
@@ -93,8 +98,8 @@
     static async startRec() { return request(`${this.host}/rec`, 'POST', 'start') }
     static async stopRec() { return request(`${this.host}/rec`, 'POST', 'stop') }
     static async setViewPanel() { return request(`${this.host}/view/panel`, 'POST', '-') }
-    static async resetAll() { return request(`${this.host}/view/reset`, 'POST', '0') }
-    static async reset() { return request(`${this.host}/view/reset`, 'POST', '1') }
+    static async reset(i) { return request(`${this.host}/view/reset`, 'POST', i) }
+    static async rebuild() { return request(`${this.host}/view/rebuild`, 'POST', '') }
     static async getCaptions() { return request(`${this.host}/captions`) }
     static async clearCaptions() { return request(`${this.host}/captions`, 'DELETE') }
     static async getStatus() { return request(`${this.host}/status`) }
@@ -146,9 +151,10 @@
     updateRecordButton()
   }
 
-  async function updateRecordButton() {
+  async function updateRecordButton(record_status) {
     const button = document.getElementById('record-button')
-    if (await HttpRemocon.getRec() === 'Recording') {
+    record_status ??= await HttpRemocon.getRec() === 'Recording'
+    if (record_status) {
       document.body.classList.add('recording')
       button.textContent = `●${button.textContent.slice(1)}`
     } else {
@@ -178,12 +184,15 @@
   async function getAndRefreshStatus() {
     const [st, c, cp, np, progress, play, sp] =
       ['status', 'status-channel', 'status-current-program', 'status-next-program', 'program-progress', 'status-play', 'status-programs']
-      .map(id => document.getElementById(id))
+        .map(id => document.getElementById(id))
 
     try {
       const s = JSON.parse(await HttpRemocon.getStatus())
       sp.hidden = false
       st.textContent = `ᵀₒᵀ${s.tot}　${s.signal_level} dB　${s.bit_rate} bps　D ${s.drop}　E ${s.error}　S ${s.scramble}`
+
+      const volume = document.getElementById('volume-slider')
+      if (volume.valueAsNumber !== s.volume) volume.valueAsNumber = s.volume
 
       if (c.textContent !== s.channel_name) c.textContent = s.channel_name ?? 'Channels';
 
@@ -202,9 +211,11 @@
       const nptt = s.current_event_name ? `${s.next_event_text}\n\n${s.next_event_ext_text}` : ''
       if (np.title !== nptt) np.title = nptt
 
-      const min = new Date(s.current_event_start_time).getTime()
-      progress.max = new Date(s.next_event_start_time).getTime() - min
-      progress.value = new Date(s.tot).getTime() - min
+      if (s.current_event_start_time < s.next_event_start_time) {
+        const min = new Date(s.current_event_start_time).getTime()
+        progress.max = new Date(s.next_event_start_time).getTime() - min
+        progress.value = new Date(s.tot).getTime() - min
+      }
 
       play.hidden = !s.play_status
       if (!play.hidden) {
@@ -215,15 +226,7 @@
         progress.max = s.total_ms
       }
 
-      const recButton = document.getElementById('record-button')
-      if (s.record_status !== 0) {
-        document.body.classList.add('recording')
-        recButton.textContent = `● ${s.record_time}`
-      } else if (document.body.classList.contains("recording")) {
-        document.body.classList.remove('recording')
-        recButton.textContent = `○ Record`
-      }
-
+      updateRecordButton(s.record_status)
     } catch {
       st.textContent = ''
       c.textContent = 'Channels'
@@ -260,7 +263,7 @@
     await init(window.location.origin)
     const [status, caption, enabledAutorefreshCaptions] =
       ['status-dialog', 'captions-dialog', 'enabled-autorefresh-captions']
-      .map(id => document.getElementById(id))
+        .map(id => document.getElementById(id))
 
     status.addEventListener('wheel', (event) => {
       if (event.deltaY < 0) setVolume(5)
@@ -286,8 +289,8 @@
       const handler = {
         ' ': () => HttpRemocon.setPlayPause(),
         'v': () => fetchAndDisplayImage(),
-        'r': () => HttpRemocon.reset(),
-        'R': () => HttpRemocon.resetAll(),
+        'r': () => HttpRemocon.reset(1),
+        'R': () => HttpRemocon.rebuild(),
         'ArrowUp': () => setVolume(+5),
         'ArrowDown': () => setVolume(-5),
         'ArrowLeft': () => HttpRemocon.setPlayPos(event.shiftKey ? '-15' : '-5'),
@@ -395,7 +398,7 @@
     <button onclick="HttpRemocon.setPlayPos(this.textContent)">+15</button>
     <button onclick="HttpRemocon.setPlayPos(this.textContent)">+30</button>
     <button onclick="HttpRemocon.setPlayPos(this.textContent)">+60</button>
-     
+
     Speed
     <button onclick="HttpRemocon.setPlaySpeed(this.textContent)">A</button>
     <button onclick="HttpRemocon.setPlaySpeed(this.textContent)">B</button>
@@ -409,24 +412,22 @@
   </div>
 
   <div>
-    <button id="show-host" commandfor="host-dialog" command="show-modal"
-      onclick="document.getElementById('host-dialog').showModal()">Host</button>
+    <button id="show-host" commandfor="host-dialog" command="show-modal">Host</button>
     <button id="status-channel" commandfor="channels-dialog" command="show-modal">Channels</button>
-    <!--<button id="status-channel2" onclick="document.getElementById('channels-dialog').showModal()">Channels</button>-->
-
-    <button onclick="HttpRemocon.reset()">Reset</button>
-    <!-- <button onclick="HttpRemocon.resetAll()">ResetAll</button> -->
+    <button onclick="HttpRemocon.reset(1)">Reset</button>
+    <button onclick="HttpRemocon.rebuild()">Rebuild</button>
 
     <button id="record-button" onclick="toggleRecording()">○ Record</button>
     <label>Volume
-      <input id="volume-slider" type="range" step="1" min="0" max="100" oninput="HttpRemocon.setVolume(this.title=this.value)" list="volume-values">
+      <input id="volume-slider" type="range" step="1" min="0" max="100"
+        oninput="HttpRemocon.setVolume(this.title=this.value)" list="volume-values">
     </label>
     <datalist id="volume-values">
       <option value="25">
       <option value="50">
       <option value="75">
     </datalist>
-    
+
     <label><input type="checkbox" id="enabled-caption-dialog">Captions</label>
   </div>
 </dialog>
@@ -443,7 +444,7 @@
   <div id="channel-list"></div>
 
   <template id="channel-list-item">
-    <button class="channel-name" style="display: block"></button>
+    <button class="channel-name"></button>
   </template>
 </dialog>
 
