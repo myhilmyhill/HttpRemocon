@@ -532,10 +532,10 @@ void CHttpRemocon::StartHttpServer()
 						TVTest::EpgEventQueryInfo QueryInfo;
 						QueryInfo.NetworkID = ChInfo.NetworkID;
 						QueryInfo.TransportStreamID = ChInfo.TransportStreamID;
-						QueryInfo.ServiceID = ChInfo.ServiceID;
-						QueryInfo.Type = TVTest::EPG_EVENT_QUERY_TIME;
+						QueryInfo.ServiceID = info.ServiceID;
+						QueryInfo.EventID = info.EventID;
+						QueryInfo.Type = TVTest::EPG_EVENT_QUERY_EVENTID;
 						QueryInfo.Flags = TVTest::EPG_EVENT_QUERY_FLAG_NONE;
-						GetSystemTimeAsFileTime(&QueryInfo.Time);
 						TVTest::EpgEventInfo* pEvent = m_pApp->GetEpgEventInfo(&QueryInfo);
 						if (pEvent != nullptr) {
 							wss << "\"current_content_nibble_level1\":" << pEvent->ContentList->ContentNibbleLevel1<< ",";
