@@ -202,7 +202,7 @@
         document.getElementById('enabled-caption-dialog').checked = cpt.includes('[字]')
       }
 
-      const cptt = s.current_event_name ? `${s.current_event_text}\n\n${s.current_event_ext_text}` : ''
+      const cptt = s.current_event_name ? `${s.current_event_text}\n\n${s.current_event_ext_text}\n\n${s.current_content_nibble}` : ''
       if (cp.title !== cptt) cp.title = cptt
 
       const npt = s.next_event_name ? `　${s.next_event_start_time} ${s.next_event_name}` : ''
